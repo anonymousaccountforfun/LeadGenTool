@@ -1,65 +1,112 @@
-import { promises as fs } from "fs";
-import path from "path";
+import { getDb } from "@/lib/db";
 import { Lead } from "@/types/lead";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const LEADS_FILE = path.join(DATA_DIR, "leads.json");
-
-async function ensureDataDir(): Promise<void> {
-  try {
-    await fs.access(DATA_DIR);
-  } catch {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-  }
-}
-
-async function ensureLeadsFile(): Promise<void> {
-  await ensureDataDir();
-  try {
-    await fs.access(LEADS_FILE);
-  } catch {
-    await fs.writeFile(LEADS_FILE, JSON.stringify([], null, 2));
-  }
-}
-
 export async function getLeads(): Promise<Lead[]> {
-  await ensureLeadsFile();
-  const data = await fs.readFile(LEADS_FILE, "utf-8");
-  return JSON.parse(data);
+  const sql = getDb();
+
+  const rows = await sql`
+    SELECT id, name, email, phone, company, message, source, created_at
+    FROM leads
+    ORDER BY created_at DESC
+  `;
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone || undefined,
+    company: row.company || undefined,
+    message: row.message,
+    source: row.source,
+    createdAt: row.created_at.toISOString(),
+  }));
 }
 
-export async function saveLead(lead: Omit<Lead, "id" | "createdAt">): Promise<Lead> {
-  await ensureLeadsFile();
-  const leads = await getLeads();
+export async function saveLead(
+  lead: Omit<Lead, "id" | "createdAt">
+): Promise<Lead> {
+  const sql = getDb();
 
-  const newLead: Lead = {
-    ...lead,
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
+  const rows = await sql`
+    INSERT INTO leads (name, email, phone, company, message, source)
+    VALUES (${lead.name}, ${lead.email}, ${lead.phone || null}, ${lead.company || null}, ${lead.message}, ${lead.source})
+    RETURNING id, name, email, phone, company, message, source, created_at
+  `;
+
+  const row = rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone || undefined,
+    company: row.company || undefined,
+    message: row.message,
+    source: row.source,
+    createdAt: row.created_at.toISOString(),
   };
-
-  leads.push(newLead);
-  await fs.writeFile(LEADS_FILE, JSON.stringify(leads, null, 2));
-
-  return newLead;
 }
 
 export async function getLeadsByDateRange(
   startDate?: string,
   endDate?: string
 ): Promise<Lead[]> {
-  const leads = await getLeads();
+  const sql = getDb();
 
-  return leads.filter((lead) => {
-    const leadDate = new Date(lead.createdAt);
-    if (startDate && new Date(startDate) > leadDate) return false;
-    if (endDate && new Date(endDate) < leadDate) return false;
-    return true;
-  });
+  let rows;
+
+  if (startDate && endDate) {
+    rows = await sql`
+      SELECT id, name, email, phone, company, message, source, created_at
+      FROM leads
+      WHERE created_at >= ${startDate}::date
+        AND created_at < (${endDate}::date + interval '1 day')
+      ORDER BY created_at DESC
+    `;
+  } else if (startDate) {
+    rows = await sql`
+      SELECT id, name, email, phone, company, message, source, created_at
+      FROM leads
+      WHERE created_at >= ${startDate}::date
+      ORDER BY created_at DESC
+    `;
+  } else if (endDate) {
+    rows = await sql`
+      SELECT id, name, email, phone, company, message, source, created_at
+      FROM leads
+      WHERE created_at < (${endDate}::date + interval '1 day')
+      ORDER BY created_at DESC
+    `;
+  } else {
+    rows = await sql`
+      SELECT id, name, email, phone, company, message, source, created_at
+      FROM leads
+      ORDER BY created_at DESC
+    `;
+  }
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone || undefined,
+    company: row.company || undefined,
+    message: row.message,
+    source: row.source,
+    createdAt: row.created_at.toISOString(),
+  }));
 }
 
 export function leadsToCSV(leads: Lead[]): string {
-  const headers = ["ID", "Name", "Email", "Phone", "Company", "Message", "Source", "Created At"];
+  const headers = [
+    "ID",
+    "Name",
+    "Email",
+    "Phone",
+    "Company",
+    "Message",
+    "Source",
+    "Created At",
+  ];
   const rows = leads.map((lead) => [
     lead.id,
     `"${lead.name.replace(/"/g, '""')}"`,
