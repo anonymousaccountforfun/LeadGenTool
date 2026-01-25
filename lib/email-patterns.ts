@@ -915,3 +915,249 @@ export function clearPatternCache(): void {
   patternCache.clear();
   catchAllCache.clear();
 }
+
+// ============ Generic Business Email Patterns ============
+
+// Common generic email prefixes for businesses (ordered by likelihood)
+const GENERIC_EMAIL_PATTERNS = [
+  'info',
+  'contact',
+  'hello',
+  'sales',
+  'support',
+  'admin',
+  'mail',
+  'office',
+  'enquiries',
+  'team',
+];
+
+// MX record cache
+const mxRecordCache = new Map<string, { records: string[]; timestamp: number }>();
+const MX_RECORD_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Rate limiting for SMTP connections
+let lastSmtpTime = 0;
+const SMTP_RATE_LIMIT_MS = 100; // 10 connections/second max
+
+export interface GenericPatternResult {
+  email: string;
+  source: 'pattern-smtp-verified' | 'pattern-mx-only';
+  confidence: number;
+  pattern: string;
+}
+
+/**
+ * Get MX records for a domain (cached)
+ */
+async function getMxRecordsForDomain(domain: string): Promise<string[]> {
+  const cached = mxRecordCache.get(domain);
+  if (cached && Date.now() - cached.timestamp < MX_RECORD_CACHE_TTL) {
+    return cached.records;
+  }
+
+  return new Promise((resolve) => {
+    dns.resolveMx(domain, (err, addresses) => {
+      if (err || !addresses || addresses.length === 0) {
+        mxRecordCache.set(domain, { records: [], timestamp: Date.now() });
+        resolve([]);
+        return;
+      }
+
+      const records = addresses
+        .sort((a, b) => a.priority - b.priority)
+        .map((mx) => mx.exchange);
+
+      mxRecordCache.set(domain, { records, timestamp: Date.now() });
+      resolve(records);
+    });
+  });
+}
+
+/**
+ * Rate-limited SMTP connection delay
+ */
+async function waitForSmtpRateLimit(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastSmtpTime;
+  if (elapsed < SMTP_RATE_LIMIT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, SMTP_RATE_LIMIT_MS - elapsed));
+  }
+  lastSmtpTime = Date.now();
+}
+
+/**
+ * Verify SMTP server responds with handshake (EHLO only, no RCPT TO)
+ */
+async function verifySmtpResponds(mxHost: string, timeoutMs: number = 5000): Promise<boolean> {
+  await waitForSmtpRateLimit();
+
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let resolved = false;
+
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        socket.destroy();
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+
+    socket.on('connect', () => {
+      // Wait for greeting
+    });
+
+    socket.on('data', (data) => {
+      const response = data.toString();
+
+      if (response.startsWith('220')) {
+        // Send EHLO
+        socket.write('EHLO leadgen.local\r\n');
+      } else if (response.startsWith('250')) {
+        // EHLO accepted
+        clearTimeout(timeout);
+        socket.write('QUIT\r\n');
+        cleanup();
+        resolve(true);
+      } else if (response.startsWith('421') || response.startsWith('450') || response.startsWith('451')) {
+        // Temporary failure but server exists
+        clearTimeout(timeout);
+        cleanup();
+        resolve(true);
+      }
+    });
+
+    socket.on('error', () => {
+      clearTimeout(timeout);
+      cleanup();
+      resolve(false);
+    });
+
+    socket.on('close', () => {
+      clearTimeout(timeout);
+      if (!resolved) {
+        resolved = true;
+        resolve(false);
+      }
+    });
+
+    socket.connect(25, mxHost);
+  });
+}
+
+/**
+ * Extract domain from URL
+ */
+function extractDomainFromUrl(url: string): string {
+  try {
+    if (url.includes('@')) {
+      return url.split('@')[1].toLowerCase();
+    }
+    const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return parsed.hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].toLowerCase();
+  }
+}
+
+/**
+ * Generate generic business email patterns for a domain
+ */
+export function generateGenericPatterns(domain: string): string[] {
+  return GENERIC_EMAIL_PATTERNS.map((prefix) => `${prefix}@${domain}`);
+}
+
+/**
+ * Find email by generic pattern with MX/SMTP validation
+ * Returns the most likely email (info@) if the domain has valid MX records and SMTP responds
+ */
+export async function findEmailByGenericPattern(
+  websiteOrDomain: string
+): Promise<GenericPatternResult | null> {
+  const domain = extractDomainFromUrl(websiteOrDomain);
+
+  if (!domain || domain.length < 4 || !domain.includes('.')) {
+    return null;
+  }
+
+  // Step 1: Check MX records
+  const mxRecords = await getMxRecordsForDomain(domain);
+
+  if (mxRecords.length === 0) {
+    // No mail servers - can't receive email
+    return null;
+  }
+
+  // Step 2: Try SMTP handshake with primary MX
+  let smtpVerified = false;
+  try {
+    smtpVerified = await verifySmtpResponds(mxRecords[0]);
+  } catch {
+    // SMTP verification failed, but MX exists
+  }
+
+  // Step 3: Return the most common generic pattern
+  const bestPattern = 'info'; // Most common for small businesses
+  const email = `${bestPattern}@${domain}`;
+
+  return {
+    email,
+    source: smtpVerified ? 'pattern-smtp-verified' : 'pattern-mx-only',
+    confidence: smtpVerified ? 0.75 : 0.50,
+    pattern: bestPattern,
+  };
+}
+
+/**
+ * Find emails by generic pattern for multiple websites
+ */
+export async function findEmailsByGenericPatternBatch(
+  websites: string[],
+  options: {
+    concurrency?: number;
+    onProgress?: (completed: number, total: number) => void;
+  } = {}
+): Promise<Map<string, GenericPatternResult | null>> {
+  const { concurrency = 5, onProgress } = options;
+  const results = new Map<string, GenericPatternResult | null>();
+  const queue = [...websites];
+  let completed = 0;
+
+  async function worker() {
+    while (queue.length > 0) {
+      const website = queue.shift();
+      if (!website) break;
+
+      try {
+        const result = await findEmailByGenericPattern(website);
+        results.set(website, result);
+      } catch {
+        results.set(website, null);
+      }
+
+      completed++;
+      onProgress?.(completed, websites.length);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, websites.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+
+  return results;
+}
+
+/**
+ * Quick check if domain can receive email (has MX records)
+ */
+export async function canReceiveEmail(domain: string): Promise<boolean> {
+  const records = await getMxRecordsForDomain(extractDomainFromUrl(domain));
+  return records.length > 0;
+}

@@ -1557,3 +1557,191 @@ export async function findEmail(website: string, browser: Browser): Promise<Emai
     }
   }
 }
+
+// ============ Browser-less Email Finding ============
+// Orchestrates multiple strategies without requiring Playwright
+
+import { findEmailSimple } from './simple-email-finder';
+import { findEmailByGenericPattern, type GenericPatternResult } from './email-patterns';
+import { findEmailFromSocial, type SocialEmailResult, type SocialSearchParams } from './social-email-finder';
+
+export interface EnhancedEmailResult {
+  email: string;
+  source: string;
+  confidence: number;
+  layer: 'website-scrape' | 'pattern-smtp' | 'social-media';
+}
+
+export interface BusinessForEmailSearch {
+  name: string;
+  website?: string | null;
+  address?: string | null;
+  instagram?: string | null;
+  facebook_url?: string | null;
+}
+
+/**
+ * Extract domain from URL
+ */
+function extractDomainSimple(url: string): string {
+  try {
+    const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return parsed.hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].toLowerCase();
+  }
+}
+
+/**
+ * Find email using multiple strategies without browser automation
+ * Layers: 1) Website scraping, 2) Pattern + SMTP, 3) Social media
+ */
+export async function findEmailEnhanced(business: BusinessForEmailSearch): Promise<EnhancedEmailResult | null> {
+  const { name, website, address, instagram, facebook_url } = business;
+  const websiteDomain = website ? extractDomainSimple(website) : undefined;
+
+  // Layer 1: Website scraping (existing simple finder)
+  if (website) {
+    try {
+      const websiteResult = await findEmailSimple(website);
+      if (websiteResult && websiteResult.confidence >= 0.80) {
+        return {
+          email: websiteResult.email,
+          source: websiteResult.source,
+          confidence: websiteResult.confidence,
+          layer: 'website-scrape',
+        };
+      }
+
+      // Store for fallback
+      if (websiteResult) {
+        // Continue to other layers but remember this result
+        var websiteFallback = websiteResult;
+      }
+    } catch {
+      // Continue to next layer
+    }
+  }
+
+  // Layer 2: Pattern guessing + SMTP validation
+  if (website) {
+    try {
+      const patternResult = await findEmailByGenericPattern(website);
+      if (patternResult && patternResult.confidence >= 0.70) {
+        return {
+          email: patternResult.email,
+          source: patternResult.source,
+          confidence: patternResult.confidence,
+          layer: 'pattern-smtp',
+        };
+      }
+
+      // Store for fallback
+      if (patternResult) {
+        var patternFallback = patternResult;
+      }
+    } catch {
+      // Continue to next layer
+    }
+  }
+
+  // Layer 3: Social media extraction
+  try {
+    const socialParams: SocialSearchParams = {
+      name,
+      location: address || undefined,
+      websiteDomain,
+      facebookUrl: facebook_url,
+      instagramUrl: instagram,
+    };
+
+    const socialResult = await findEmailFromSocial(socialParams);
+    if (socialResult) {
+      // Boost confidence if email matches website domain
+      let confidence = socialResult.confidence;
+      if (websiteDomain && socialResult.email.includes(websiteDomain)) {
+        confidence = Math.min(0.85, confidence + 0.10);
+      }
+
+      return {
+        email: socialResult.email,
+        source: socialResult.source,
+        confidence,
+        layer: 'social-media',
+      };
+    }
+  } catch {
+    // Continue to fallbacks
+  }
+
+  // Fallback: Return best result from earlier layers
+  // @ts-ignore - websiteFallback may be undefined
+  if (typeof websiteFallback !== 'undefined') {
+    return {
+      email: websiteFallback.email,
+      source: websiteFallback.source,
+      confidence: websiteFallback.confidence,
+      layer: 'website-scrape',
+    };
+  }
+
+  // @ts-ignore - patternFallback may be undefined
+  if (typeof patternFallback !== 'undefined') {
+    return {
+      email: patternFallback.email,
+      source: patternFallback.source,
+      confidence: patternFallback.confidence,
+      layer: 'pattern-smtp',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Find emails for multiple businesses using enhanced strategy
+ */
+export async function findEmailsEnhancedBatch(
+  businesses: BusinessForEmailSearch[],
+  options: {
+    concurrency?: number;
+    onProgress?: (completed: number, total: number, result: { name: string; email: string | null; layer?: string }) => void;
+  } = {}
+): Promise<Map<string, EnhancedEmailResult | null>> {
+  const { concurrency = 5, onProgress } = options;
+  const results = new Map<string, EnhancedEmailResult | null>();
+  const queue = [...businesses];
+  let completed = 0;
+
+  async function worker() {
+    while (queue.length > 0) {
+      const business = queue.shift();
+      if (!business) break;
+
+      let result: EnhancedEmailResult | null = null;
+
+      try {
+        result = await findEmailEnhanced(business);
+      } catch {
+        result = null;
+      }
+
+      results.set(business.name, result);
+      completed++;
+
+      onProgress?.(completed, businesses.length, {
+        name: business.name,
+        email: result?.email || null,
+        layer: result?.layer,
+      });
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, businesses.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+
+  return results;
+}

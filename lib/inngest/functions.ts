@@ -1,7 +1,7 @@
 import { inngest } from './client';
 import { updateJobStatus, addBusiness, getJob, getBusinessesByJobId, updateBusinessEmail } from '@/lib/db';
 import { discover, type ScrapedBusiness } from '@/lib/scraper';
-import { findEmailSimple } from '@/lib/simple-email-finder';
+import { findEmailEnhanced, type BusinessForEmailSearch } from '@/lib/email-finder';
 import { getErrorMessage } from '@/lib/errors';
 import {
   trackJobStarted,
@@ -154,29 +154,40 @@ export const processLeadGenJob = inngest.createFunction(
       // Track progress
       trackJobProgress(jobId, totalProcessed, emailCount, {});
 
-      // Step 5: Find emails for businesses that have websites but no email
-      const emailFindingResult = await step.run('find-emails', async () => {
+      // Step 5: Find emails using enhanced multi-layer strategy
+      // Layer 1: Website scraping, Layer 2: Pattern + SMTP, Layer 3: Social media
+      const emailFindingResult = await step.run('find-emails-enhanced', async () => {
         const businessesNeedingEmail = await getBusinessesByJobId(jobId);
-        const toProcess = businessesNeedingEmail.filter(b => !b.email && b.website);
+        const toProcess = businessesNeedingEmail.filter(b => !b.email);
 
         if (toProcess.length === 0) {
-          return { found: 0 };
+          return { found: 0, byLayer: { website: 0, pattern: 0, social: 0 } };
         }
 
-        await updateJobStatus(jobId, 'running', 92, `Finding emails for ${toProcess.length} businesses...`);
+        await updateJobStatus(jobId, 'running', 90, `Finding emails for ${toProcess.length} businesses (enhanced)...`);
 
         let found = 0;
-        const concurrency = 5;
+        const byLayer = { website: 0, pattern: 0, social: 0 };
+        const concurrency = 3; // Lower concurrency for enhanced finder (more requests per business)
         const queue = [...toProcess];
         let completed = 0;
 
         async function worker() {
           while (queue.length > 0) {
             const business = queue.shift();
-            if (!business || !business.website) continue;
+            if (!business) continue;
 
             try {
-              const result = await findEmailSimple(business.website);
+              // Prepare business data for enhanced finder
+              const searchParams: BusinessForEmailSearch = {
+                name: business.name,
+                website: business.website,
+                address: business.address,
+                instagram: business.instagram,
+                facebook_url: null, // Add facebook_url to db schema if needed
+              };
+
+              const result = await findEmailEnhanced(searchParams);
               if (result && result.email) {
                 await updateBusinessEmail(
                   business.id,
@@ -185,18 +196,24 @@ export const processLeadGenJob = inngest.createFunction(
                   result.confidence
                 );
                 found++;
+
+                // Track by layer
+                if (result.layer === 'website-scrape') byLayer.website++;
+                else if (result.layer === 'pattern-smtp') byLayer.pattern++;
+                else if (result.layer === 'social-media') byLayer.social++;
               }
             } catch (e) {
-              console.warn(`Email finding failed for ${business.name}:`, e);
+              console.warn(`Enhanced email finding failed for ${business.name}:`, e);
             }
 
             completed++;
-            if (completed % 5 === 0) {
+            if (completed % 3 === 0 || completed === toProcess.length) {
+              const layerSummary = `W:${byLayer.website} P:${byLayer.pattern} S:${byLayer.social}`;
               await updateJobStatus(
                 jobId,
                 'running',
-                92 + Math.round((completed / toProcess.length) * 6),
-                `Finding emails... (${found} found, ${completed}/${toProcess.length} checked)`
+                90 + Math.round((completed / toProcess.length) * 8),
+                `Finding emails... (${found} found [${layerSummary}], ${completed}/${toProcess.length})`
               );
             }
           }
@@ -205,7 +222,8 @@ export const processLeadGenJob = inngest.createFunction(
         // Run workers in parallel
         await Promise.all(Array.from({ length: Math.min(concurrency, toProcess.length) }, () => worker()));
 
-        return { found };
+        console.log(`[Inngest] Email finding complete: ${found} found (website: ${byLayer.website}, pattern: ${byLayer.pattern}, social: ${byLayer.social})`);
+        return { found, byLayer };
       });
 
       emailCount += emailFindingResult.found;
