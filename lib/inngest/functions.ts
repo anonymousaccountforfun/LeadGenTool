@@ -1,6 +1,7 @@
 import { inngest } from './client';
-import { updateJobStatus, addBusiness, getJob } from '@/lib/db';
+import { updateJobStatus, addBusiness, getJob, getBusinessesByJobId, updateBusinessEmail } from '@/lib/db';
 import { discover, type ScrapedBusiness } from '@/lib/scraper';
+import { findEmailSimple } from '@/lib/simple-email-finder';
 import { getErrorMessage } from '@/lib/errors';
 import {
   trackJobStarted,
@@ -147,12 +148,69 @@ export const processLeadGenJob = inngest.createFunction(
         return { savedCount, emailCount, total };
       });
 
-      const { savedCount: totalProcessed, emailCount } = saveResult;
+      const { savedCount: totalProcessed } = saveResult;
+      let { emailCount } = saveResult;
 
       // Track progress
       trackJobProgress(jobId, totalProcessed, emailCount, {});
 
-      // Step 5: Finalize job
+      // Step 5: Find emails for businesses that have websites but no email
+      const emailFindingResult = await step.run('find-emails', async () => {
+        const businessesNeedingEmail = await getBusinessesByJobId(jobId);
+        const toProcess = businessesNeedingEmail.filter(b => !b.email && b.website);
+
+        if (toProcess.length === 0) {
+          return { found: 0 };
+        }
+
+        await updateJobStatus(jobId, 'running', 92, `Finding emails for ${toProcess.length} businesses...`);
+
+        let found = 0;
+        const concurrency = 5;
+        const queue = [...toProcess];
+        let completed = 0;
+
+        async function worker() {
+          while (queue.length > 0) {
+            const business = queue.shift();
+            if (!business || !business.website) continue;
+
+            try {
+              const result = await findEmailSimple(business.website);
+              if (result && result.email) {
+                await updateBusinessEmail(
+                  business.id,
+                  result.email,
+                  result.source,
+                  result.confidence
+                );
+                found++;
+              }
+            } catch (e) {
+              console.warn(`Email finding failed for ${business.name}:`, e);
+            }
+
+            completed++;
+            if (completed % 5 === 0) {
+              await updateJobStatus(
+                jobId,
+                'running',
+                92 + Math.round((completed / toProcess.length) * 6),
+                `Finding emails... (${found} found, ${completed}/${toProcess.length} checked)`
+              );
+            }
+          }
+        }
+
+        // Run workers in parallel
+        await Promise.all(Array.from({ length: Math.min(concurrency, toProcess.length) }, () => worker()));
+
+        return { found };
+      });
+
+      emailCount += emailFindingResult.found;
+
+      // Step 6: Finalize job
       await step.run('finalize-job', async () => {
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         logger.info('Job completed successfully', {

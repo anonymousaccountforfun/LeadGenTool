@@ -232,6 +232,44 @@ export async function getBusinessesByJobId(jobId: string): Promise<Business[]> {
   }));
 }
 
+export async function updateBusinessEmail(
+  id: number,
+  email: string,
+  emailSource: string,
+  emailConfidence: number
+): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`
+      UPDATE businesses
+      SET email = ${email},
+          email_source = ${emailSource},
+          email_confidence = ${emailConfidence}
+      WHERE id = ${id} AND (email IS NULL OR email_confidence < ${emailConfidence})
+    `;
+  }, 'updateBusinessEmail');
+}
+
+export async function getBusinessesWithoutEmail(jobId: string, limit: number = 50): Promise<Business[]> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT * FROM businesses
+    WHERE job_id = ${jobId} AND email IS NULL AND website IS NOT NULL
+    ORDER BY rating DESC NULLS LAST
+    LIMIT ${limit}
+  `;
+  return rows.map(row => ({
+    id: row.id, job_id: row.job_id, name: row.name, website: row.website,
+    email: row.email, email_source: row.email_source, email_confidence: row.email_confidence || 0,
+    phone: row.phone, address: row.address, instagram: row.instagram,
+    rating: row.rating, review_count: row.review_count, years_in_business: row.years_in_business,
+    source: row.source, created_at: row.created_at,
+    employee_count: row.employee_count || null,
+    industry_code: row.industry_code || null,
+    is_b2b: row.is_b2b ?? true,
+  }));
+}
+
 export async function getEmailCountByJobId(jobId: string): Promise<{ total: number; withEmail: number; verified: number }> {
   const sql = getDb();
   const totalResult = await sql`SELECT COUNT(*) as count FROM businesses WHERE job_id = ${jobId}`;
