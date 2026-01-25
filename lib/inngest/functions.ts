@@ -1,7 +1,7 @@
 import { inngest } from './client';
 import { updateJobStatus, addBusiness, getJob } from '@/lib/db';
 import { discover, ScrapedBusiness } from '@/lib/scraper';
-import { findEmail } from '@/lib/email-finder';
+import { findEmailsParallel, calculateOptimalConcurrency, type BusinessEmailInput } from '@/lib/parallel-email-finder';
 import { warmupBrowserPool, getBrowserPoolStats, withPooledBrowser, getBrowserlessStatus } from '@/lib/browser-pool';
 import { getErrorMessage } from '@/lib/errors';
 import {
@@ -106,46 +106,62 @@ export const processLeadGenJob = inngest.createFunction(
             jobId,
             'running',
             35 + Math.round((batchIndex / batches.length) * 55),
-            `Processing batch ${batchIndex + 1}/${batches.length}...`
+            `Processing batch ${batchIndex + 1}/${batches.length} (parallel)...`
           );
 
-          await withPooledBrowser(async (browser) => {
-            for (const business of batch) {
-              // Skip if we've already processed this business or reached target
-              if (processedNames.has(business.name.toLowerCase())) continue;
-              if (emailCount + batchEmailCount >= count) break;
+          // Filter out already processed businesses
+          const toProcess: (ScrapedBusiness & { id: number })[] = [];
+          let idCounter = 0;
+          for (const business of batch) {
+            if (processedNames.has(business.name.toLowerCase())) continue;
+            if (emailCount + toProcess.length >= count) break;
+            processedNames.add(business.name.toLowerCase());
+            toProcess.push({ ...business, id: idCounter++ });
+          }
 
-              processedNames.add(business.name.toLowerCase());
+          if (toProcess.length === 0) {
+            return { emailCount: 0, processed: 0 };
+          }
+
+          // Use parallel email finding
+          await withPooledBrowser(async (browser) => {
+            const concurrency = calculateOptimalConcurrency(toProcess.length, true);
+            const emailInputs: BusinessEmailInput[] = toProcess.map(b => ({
+              id: b.id,
+              name: b.name,
+              website: b.website,
+              email: b.email,
+            }));
+
+            const emailResults = await findEmailsParallel(emailInputs, browser, {
+              concurrency,
+              onProgress: async (completed, total, result) => {
+                if (result.email) {
+                  await updateJobStatus(
+                    jobId,
+                    'running',
+                    35 + Math.round(((batchIndex + completed / total) / batches.length) * 55),
+                    `Found email for ${result.name.substring(0, 30)}...`
+                  );
+                }
+              },
+            });
+
+            // Save results to database
+            for (let i = 0; i < emailResults.length; i++) {
+              const result = emailResults[i];
+              const business = toProcess[i];
               batchProcessed++;
 
-              let email = null;
-              let emailSource = null;
-              let emailConfidence = 0;
-
-              if (business.email) {
-                email = business.email;
-                emailSource = 'scraped-listing';
-                emailConfidence = 0.85;
-              } else if (business.website) {
-                try {
-                  const result = await findEmail(business.website, browser);
-                  email = result.email;
-                  emailSource = result.source;
-                  emailConfidence = result.confidence;
-                } catch (emailError) {
-                  console.warn(`Email finding failed for ${business.website}:`, getErrorMessage(emailError));
-                }
-              }
-
-              if (email) {
+              if (result.email) {
                 batchEmailCount++;
                 await addBusiness({
                   job_id: jobId,
                   name: business.name,
                   website: business.website,
-                  email,
-                  email_source: emailSource,
-                  email_confidence: emailConfidence,
+                  email: result.email,
+                  email_source: result.emailSource,
+                  email_confidence: result.emailConfidence,
                   phone: business.phone,
                   address: business.address,
                   instagram: business.instagram,
@@ -153,18 +169,10 @@ export const processLeadGenJob = inngest.createFunction(
                   review_count: business.review_count,
                   years_in_business: business.years_in_business || null,
                   source: business.source,
-                  // B2C targeting fields - will be enriched later
                   employee_count: null,
                   industry_code: null,
-                  is_b2b: false, // Default to B2C (consumer business)
+                  is_b2b: false,
                 });
-
-                await updateJobStatus(
-                  jobId,
-                  'running',
-                  35 + Math.round(((batchIndex + 1) / batches.length) * 55),
-                  `Found ${emailCount + batchEmailCount}/${count} emails: ${business.name.substring(0, 30)}...`
-                );
               }
             }
           });

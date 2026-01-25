@@ -19,6 +19,10 @@ export interface QualityMetrics {
   emailQuality: number;
   overallScore: number;
   flags: string[];
+  // Multi-source cross-reference scoring
+  sourceCount: number;
+  sources: string[];
+  crossRefScore: number;
 }
 
 export interface EnrichedBusiness extends ScrapedBusiness {
@@ -757,6 +761,10 @@ export function enrichBusiness(business: ScrapedBusiness): EnrichedBusiness {
       emailQuality: emailValidation.score,
       overallScore,
       flags,
+      // Initialize cross-reference tracking
+      sourceCount: 1,
+      sources: [business.source],
+      crossRefScore: 0, // Will be calculated after merging duplicates
     },
     normalizedName,
     normalizedPhone,
@@ -825,25 +833,33 @@ export function deduplicateBusinesses(
     }
 
     if (isDuplicate && duplicateOf) {
-      // Keep the higher quality version
-      if (business.quality.overallScore > duplicateOf.quality.overallScore) {
-        // Replace the existing one
-        const idx = unique.indexOf(duplicateOf);
-        if (idx !== -1) {
-          unique[idx] = business;
-          duplicates.push({ business: duplicateOf, duplicateOf: business, similarity: highestSimilarity });
+      // Merge the businesses to combine data from both sources
+      const idx = unique.indexOf(duplicateOf);
+      if (idx !== -1) {
+        // Determine which is primary based on quality
+        const primary = business.quality.overallScore > duplicateOf.quality.overallScore
+          ? business
+          : duplicateOf;
+        const secondary = primary === business ? duplicateOf : business;
 
-          // Update indices
-          if (business.normalizedPhone) {
-            phoneIndex.set(business.normalizedPhone, business);
-          }
-          const domain = extractDomain(business.website);
-          if (domain) {
-            domainIndex.set(domain, business);
-          }
+        // Merge data from both, keeping best of each field
+        const merged = mergeDuplicates(primary, secondary);
+
+        // Recalculate overall score with cross-reference boost
+        merged.quality.overallScore = recalculateOverallScore(merged.quality);
+
+        // Replace in unique list
+        unique[idx] = merged;
+        duplicates.push({ business: secondary, duplicateOf: merged, similarity: highestSimilarity });
+
+        // Update indices to point to merged record
+        if (merged.normalizedPhone) {
+          phoneIndex.set(merged.normalizedPhone, merged);
         }
-      } else {
-        duplicates.push({ business, duplicateOf, similarity: highestSimilarity });
+        const domain = extractDomain(merged.website);
+        if (domain) {
+          domainIndex.set(domain, merged);
+        }
       }
     } else {
       unique.push(business);
@@ -876,8 +892,17 @@ export function deduplicateBusinesses(
 
 /**
  * Merge data from duplicate businesses to create the best record
+ * Tracks sources for cross-reference scoring
  */
 export function mergeDuplicates(primary: EnrichedBusiness, duplicate: EnrichedBusiness): EnrichedBusiness {
+  // Merge source lists (deduplicated)
+  const mergedSources = [...new Set([...primary.quality.sources, ...duplicate.quality.sources])];
+  const sourceCount = mergedSources.length;
+
+  // Calculate cross-reference score based on number of confirming sources
+  // More sources = higher confidence boost
+  const crossRefScore = calculateCrossRefScore(sourceCount, mergedSources);
+
   return {
     ...primary,
     // Use the better value for each field
@@ -888,12 +913,61 @@ export function mergeDuplicates(primary: EnrichedBusiness, duplicate: EnrichedBu
     rating: primary.rating ?? duplicate.rating,
     review_count: primary.review_count ?? duplicate.review_count,
     years_in_business: primary.years_in_business ?? duplicate.years_in_business,
-    // Keep primary's quality metrics but note it was merged
+    // Keep primary's quality metrics but update cross-reference tracking
     quality: {
       ...primary.quality,
       flags: [...primary.quality.flags, `merged_from_${duplicate.source}`],
+      sourceCount,
+      sources: mergedSources,
+      crossRefScore,
     },
   };
+}
+
+/**
+ * Recalculate overall quality score including cross-reference boost
+ */
+export function recalculateOverallScore(quality: QualityMetrics): number {
+  // Base score from individual field qualities
+  const weights = { name: 0.15, phone: 0.25, address: 0.15, website: 0.25, email: 0.2 };
+  const baseScore =
+    quality.nameQuality * weights.name +
+    quality.phoneQuality * weights.phone +
+    quality.addressQuality * weights.address +
+    quality.websiteQuality * weights.website +
+    quality.emailQuality * weights.email;
+
+  // Apply cross-reference boost (additive, capped at 1.0)
+  const boostedScore = Math.min(baseScore + quality.crossRefScore, 1.0);
+
+  return boostedScore;
+}
+
+/**
+ * Calculate cross-reference score based on source diversity
+ * Returns a 0-1 score that can boost overall confidence
+ */
+export function calculateCrossRefScore(sourceCount: number, sources: string[]): number {
+  // Base score from number of sources
+  // 1 source = 0, 2 sources = 0.15, 3+ sources = 0.25, 4+ sources = 0.35
+  let score = 0;
+  if (sourceCount >= 4) score = 0.35;
+  else if (sourceCount >= 3) score = 0.25;
+  else if (sourceCount >= 2) score = 0.15;
+
+  // Bonus for high-quality source combinations
+  const hasGoogleMaps = sources.some(s => s.toLowerCase().includes('google') || s.toLowerCase().includes('maps'));
+  const hasYelp = sources.some(s => s.toLowerCase().includes('yelp'));
+  const hasBBB = sources.some(s => s.toLowerCase().includes('bbb') || s.toLowerCase().includes('better_business'));
+  const hasYellowPages = sources.some(s => s.toLowerCase().includes('yellow') || s.toLowerCase().includes('yp'));
+
+  // Premium sources combo bonus
+  const premiumSourceCount = [hasGoogleMaps, hasYelp, hasBBB, hasYellowPages].filter(Boolean).length;
+  if (premiumSourceCount >= 3) score += 0.1;
+  else if (premiumSourceCount >= 2) score += 0.05;
+
+  // Cap at 0.5 (50% boost max)
+  return Math.min(score, 0.5);
 }
 
 /**

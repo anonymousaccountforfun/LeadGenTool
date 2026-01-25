@@ -46,11 +46,14 @@ export interface SourceFilterOptions {
   companySizeMax?: number | null;
 }
 
-interface SourceConfig {
+export type SourceType = 'api' | 'scrape';
+
+export interface SourceConfig {
   source: DataSource;
   priority: number; // 1 = highest priority, run first
   parallel: boolean; // Can run in parallel with same priority level
   minResults?: number; // Skip if we already have this many results
+  type: SourceType; // Whether this source uses an API or scraping
 }
 
 // Category detection patterns
@@ -124,124 +127,125 @@ const CATEGORY_PATTERNS: Record<QueryCategory, string[]> = {
 };
 
 // Source configurations by category
+// Note: 'api' type = official API (fast, reliable), 'scrape' type = web scraping (slower, may break)
 const SOURCE_PRIORITIES: Record<QueryCategory, SourceConfig[]> = {
   medical: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'healthgrades', priority: 1, parallel: true },
-    { source: 'zocdoc', priority: 1, parallel: true },
-    { source: 'yelp', priority: 2, parallel: true, minResults: 10 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'bbb', priority: 3, parallel: false, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'healthgrades', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'zocdoc', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 2, parallel: true, minResults: 10, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'bbb', priority: 3, parallel: false, minResults: 20, type: 'scrape' },
   ],
   home_services: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'angi', priority: 1, parallel: true },
-    { source: 'homeadvisor', priority: 1, parallel: true },
-    { source: 'thumbtack', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'houzz', priority: 2, parallel: true, minResults: 10 },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'bbb', priority: 2, parallel: true, minResults: 15 },
-    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'angi', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'homeadvisor', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'thumbtack', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'houzz', priority: 2, parallel: true, minResults: 10, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'bbb', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25, type: 'scrape' },
   ],
   restaurant_food: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'tripadvisor', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'tripadvisor', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
   ],
   retail: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25, type: 'scrape' },
   ],
   professional_services: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'bbb', priority: 1, parallel: true },
-    { source: 'avvo', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'chamber_of_commerce', priority: 2, parallel: true, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bbb', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'avvo', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'chamber_of_commerce', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
   ],
   beauty_wellness: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'thumbtack', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'thumbtack', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
   ],
   automotive: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'bbb', priority: 2, parallel: true, minResults: 15 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'bbb', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
   ],
   online_brand: [
-    { source: 'google_search', priority: 1, parallel: true },
-    { source: 'instagram', priority: 1, parallel: true },
+    { source: 'google_search', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'instagram', priority: 1, parallel: true, type: 'scrape' },
   ],
   general_local: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'thumbtack', priority: 2, parallel: true, minResults: 10 },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'bbb', priority: 2, parallel: true, minResults: 15 },
-    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'thumbtack', priority: 2, parallel: true, minResults: 10, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'bbb', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25, type: 'scrape' },
   ],
   general_online: [
-    { source: 'google_search', priority: 1, parallel: true },
-    { source: 'instagram', priority: 2, parallel: false, minResults: 15 },
+    { source: 'google_search', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'instagram', priority: 2, parallel: false, minResults: 15, type: 'scrape' },
   ],
   entertainment: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'tripadvisor', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'tripadvisor', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
   ],
   education: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 15 },
-    { source: 'bbb', priority: 2, parallel: true, minResults: 20 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'bbb', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
   ],
   pet_services: [
-    { source: 'google_maps', priority: 1, parallel: true },
-    { source: 'google_serp', priority: 1, parallel: true },
-    { source: 'bing_places', priority: 1, parallel: true },
-    { source: 'yelp', priority: 1, parallel: true },
-    { source: 'thumbtack', priority: 2, parallel: true, minResults: 10 },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15 },
-    { source: 'manta', priority: 2, parallel: true, minResults: 20 },
-    { source: 'bbb', priority: 3, parallel: false, minResults: 25 },
+    { source: 'google_maps', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'thumbtack', priority: 2, parallel: true, minResults: 10, type: 'scrape' },
+    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'manta', priority: 2, parallel: true, minResults: 20, type: 'scrape' },
+    { source: 'bbb', priority: 3, parallel: false, minResults: 25, type: 'scrape' },
   ],
 };
 
@@ -360,6 +364,29 @@ export function getCategoryDescription(category: QueryCategory): string {
     pet_services: 'Pet Services',
   };
   return descriptions[category];
+}
+
+/**
+ * Check if a source uses an API (fast, reliable) or scraping (slower)
+ */
+export function isApiSource(source: DataSource): boolean {
+  // These sources have official API integrations in api-fallback.ts
+  const apiSources: DataSource[] = [];
+  // Note: google_maps scraping is different from google_places_api
+  // All current scrapers use web scraping, APIs are handled separately
+  return apiSources.includes(source);
+}
+
+/**
+ * Get the type of a source (api or scrape)
+ */
+export function getSourceType(source: DataSource): SourceType {
+  // Check all category configs to find the source type
+  for (const configs of Object.values(SOURCE_PRIORITIES)) {
+    const config = configs.find(c => c.source === source);
+    if (config) return config.type;
+  }
+  return 'scrape'; // Default to scrape if not found
 }
 
 /**

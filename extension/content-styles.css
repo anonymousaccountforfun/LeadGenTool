@@ -1,0 +1,131 @@
+/* LeadGenTool Chrome Extension - Content Script Styles */
+/* These styles are injected into Google Maps pages */
+
+.leadgen-email-overlay {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.leadgen-email-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(10, 10, 15, 0.95);
+  border: 1px solid rgba(100, 255, 218, 0.3);
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11px;
+  color: #64ffda;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+
+.leadgen-email-badge:hover {
+  border-color: #64ffda;
+  box-shadow: 0 2px 12px rgba(100, 255, 218, 0.2);
+}
+
+.leadgen-email-badge.verified {
+  border-color: #22c55e;
+}
+
+.leadgen-email-badge.verified::after {
+  content: '\2713';
+  font-size: 10px;
+  color: #22c55e;
+  margin-left: 2px;
+}
+
+.leadgen-email-badge.copied {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: #22c55e;
+}
+
+.leadgen-email-badge.copied::before {
+  content: 'Copied!';
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  background: #22c55e;
+  color: white;
+  border-radius: 3px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.leadgen-email-badge svg {
+  stroke: #64ffda;
+  flex-shrink: 0;
+}
+
+.leadgen-email-text {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leadgen-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  background: transparent;
+  border: none;
+  color: #8892b0;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.2s;
+}
+
+.leadgen-copy-btn:hover {
+  background: rgba(100, 255, 218, 0.1);
+  color: #64ffda;
+}
+
+.leadgen-copy-btn svg {
+  stroke: currentColor;
+}
+
+/* Notification toast */
+.leadgen-toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  padding: 12px 20px;
+  background: #1a1a2e;
+  border: 1px solid #64ffda;
+  border-radius: 8px;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  z-index: 10001;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Ensure overlays don't break Google Maps layout */
+[data-result-index] {
+  position: relative !important;
+}
+
+.Nv2PK {
+  position: relative !important;
+}

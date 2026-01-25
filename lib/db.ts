@@ -52,13 +52,15 @@ export type CompanySizeRange = '1-10' | '11-50' | '51-200' | '201-500' | '500+' 
 
 export interface Job {
   id: string; query: string; location: string | null; target_count: number;
-  status: 'pending' | 'running' | 'completed' | 'failed'; progress: number;
+  status: 'pending' | 'processing' | 'running' | 'completed' | 'failed'; progress: number;
   message: string | null; priority: JobPriority; created_at: string;
   // B2B targeting fields
   industry_category: string | null;
   company_size_min: number | null;
   company_size_max: number | null;
   target_state: string | null;
+  // Optional result count (populated in queries)
+  result_count?: number;
 }
 
 export interface Business {
@@ -168,20 +170,6 @@ export interface B2BTargeting {
   targetState?: string | null;
 }
 
-export async function createJob(
-  id: string,
-  query: string,
-  location: string | null,
-  targetCount: number,
-  priority: JobPriority = 'normal',
-  b2bTargeting?: B2BTargeting
-): Promise<void> {
-  return withDbRetry(async () => {
-    const sql = getDb();
-    await sql`INSERT INTO jobs (id, query, location, target_count, status, progress, message, priority, industry_category, company_size_min, company_size_max, target_state) VALUES (${id}, ${query}, ${location}, ${targetCount}, 'pending', 0, 'Queued...', ${priority}, ${b2bTargeting?.industryCategory || null}, ${b2bTargeting?.companySizeMin || null}, ${b2bTargeting?.companySizeMax || null}, ${b2bTargeting?.targetState || null})`;
-  }, 'createJob');
-}
-
 export async function getJob(id: string): Promise<Job | undefined> {
   return withDbRetry(async () => {
     const sql = getDb();
@@ -278,6 +266,80 @@ export async function getBusinessCount(jobId: string): Promise<number> {
   return Number(result[0].count);
 }
 
+// ============ Data Quality Reports ============
+
+export type ReportType = 'wrong_email' | 'disconnected_phone' | 'wrong_address' | 'closed_business' | 'duplicate' | 'other';
+
+export interface DataReport {
+  id: number;
+  business_id: number;
+  report_type: ReportType;
+  details: string | null;
+  created_at: string;
+}
+
+export async function createDataReportsTable(): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`
+      CREATE TABLE IF NOT EXISTS data_reports (
+        id SERIAL PRIMARY KEY,
+        business_id INTEGER NOT NULL REFERENCES businesses(id),
+        report_type TEXT NOT NULL,
+        details TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_data_reports_business_id ON data_reports(business_id)`;
+  }, 'createDataReportsTable');
+}
+
+export async function submitDataReport(
+  businessId: number,
+  reportType: ReportType,
+  details?: string
+): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    // Insert the report
+    await sql`
+      INSERT INTO data_reports (business_id, report_type, details)
+      VALUES (${businessId}, ${reportType}, ${details || null})
+    `;
+
+    // If email is reported wrong, reduce confidence
+    if (reportType === 'wrong_email') {
+      await sql`
+        UPDATE businesses
+        SET email_confidence = GREATEST(email_confidence - 0.3, 0)
+        WHERE id = ${businessId}
+      `;
+    }
+  }, 'submitDataReport');
+}
+
+export async function getReportsForBusiness(businessId: number): Promise<DataReport[]> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT * FROM data_reports
+    WHERE business_id = ${businessId}
+    ORDER BY created_at DESC
+  `;
+  return rows.map(row => ({
+    id: row.id,
+    business_id: row.business_id,
+    report_type: row.report_type as ReportType,
+    details: row.details,
+    created_at: row.created_at,
+  }));
+}
+
+export async function getReportCount(businessId: number): Promise<number> {
+  const sql = getDb();
+  const result = await sql`SELECT COUNT(*) as count FROM data_reports WHERE business_id = ${businessId}`;
+  return Number(result[0].count);
+}
+
 export async function getSearchHistory(limit: number = 10): Promise<SearchHistoryItem[]> {
   const sql = getDb();
   const rows = await sql`
@@ -310,4 +372,200 @@ export async function getSearchHistory(limit: number = 10): Promise<SearchHistor
     emails_found: Number(row.emails_found),
     verified_emails: Number(row.verified_emails)
   }));
+}
+
+// ============ Bulk Job Groups ============
+
+export interface BulkJobGroup {
+  id: string;
+  query: string;
+  total_locations: number;
+  industry_category: string | null;
+  b2c_only: boolean;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  created_at: string;
+}
+
+export async function createBulkJobGroupsTable(): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`
+      CREATE TABLE IF NOT EXISTS bulk_job_groups (
+        id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        total_locations INTEGER NOT NULL,
+        industry_category TEXT,
+        b2c_only BOOLEAN DEFAULT true,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `;
+    // Add bulk_group_id to jobs table if not exists
+    await sql`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jobs' AND column_name='bulk_group_id') THEN
+          ALTER TABLE jobs ADD COLUMN bulk_group_id TEXT REFERENCES bulk_job_groups(id);
+        END IF;
+      END $$;
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_jobs_bulk_group_id ON jobs(bulk_group_id)`;
+  }, 'createBulkJobGroupsTable');
+}
+
+interface CreateBulkJobGroupParams {
+  query: string;
+  totalLocations: number;
+  industryCategory?: string;
+  b2cOnly?: boolean;
+}
+
+export async function createBulkJobGroup(params: CreateBulkJobGroupParams): Promise<BulkJobGroup> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    const id = `bulk_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    await sql`
+      INSERT INTO bulk_job_groups (id, query, total_locations, industry_category, b2c_only, status)
+      VALUES (${id}, ${params.query}, ${params.totalLocations}, ${params.industryCategory || null}, ${params.b2cOnly ?? true}, 'pending')
+    `;
+
+    return {
+      id,
+      query: params.query,
+      total_locations: params.totalLocations,
+      industry_category: params.industryCategory || null,
+      b2c_only: params.b2cOnly ?? true,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+  }, 'createBulkJobGroup');
+}
+
+export async function getBulkJobGroup(id: string): Promise<BulkJobGroup | undefined> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    const rows = await sql`SELECT * FROM bulk_job_groups WHERE id = ${id}`;
+    if (rows.length === 0) return undefined;
+    const row = rows[0];
+    return {
+      id: row.id,
+      query: row.query,
+      total_locations: row.total_locations,
+      industry_category: row.industry_category,
+      b2c_only: row.b2c_only,
+      status: row.status,
+      created_at: row.created_at,
+    };
+  }, 'getBulkJobGroup');
+}
+
+export async function getJobsByBulkGroupId(bulkGroupId: string): Promise<Job[]> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    const rows = await sql`SELECT * FROM jobs WHERE bulk_group_id = ${bulkGroupId} ORDER BY created_at ASC`;
+    return rows.map(row => ({
+      id: row.id,
+      query: row.query,
+      location: row.location,
+      target_count: row.target_count,
+      status: row.status,
+      progress: row.progress,
+      message: row.message,
+      priority: row.priority || 'normal',
+      created_at: row.created_at,
+      industry_category: row.industry_category || null,
+      company_size_min: row.company_size_min || null,
+      company_size_max: row.company_size_max || null,
+      target_state: row.target_state || null,
+      result_count: row.result_count || 0,
+    }));
+  }, 'getJobsByBulkGroupId');
+}
+
+export async function updateBulkJobGroupStatus(id: string, status: BulkJobGroup['status']): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`UPDATE bulk_job_groups SET status = ${status} WHERE id = ${id}`;
+  }, 'updateBulkJobGroupStatus');
+}
+
+// Extended createJob to support bulk group
+interface CreateJobParams {
+  query: string;
+  location: string | null;
+  count: number;
+  priority?: JobPriority;
+  industryCategory?: string | null;
+  targetState?: string | null;
+  companySizeMin?: number | null;
+  companySizeMax?: number | null;
+  b2cOnly?: boolean;
+  bulkGroupId?: string | null;
+}
+
+export async function createJob(params: CreateJobParams | string, query?: string, location?: string | null, targetCount?: number, priority?: JobPriority, b2bTargeting?: B2BTargeting): Promise<Job> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+
+    // Support both old signature and new object signature
+    let jobParams: CreateJobParams;
+    if (typeof params === 'string') {
+      // Old signature: createJob(id, query, location, count, priority, b2bTargeting)
+      jobParams = {
+        query: query!,
+        location: location ?? null,
+        count: targetCount!,
+        priority: priority || 'normal',
+        industryCategory: b2bTargeting?.industryCategory ?? null,
+        targetState: b2bTargeting?.targetState ?? null,
+        companySizeMin: b2bTargeting?.companySizeMin ?? null,
+        companySizeMax: b2bTargeting?.companySizeMax ?? null,
+        bulkGroupId: null,
+      };
+      // Use the provided ID for backward compatibility
+      const id = params;
+      await sql`INSERT INTO jobs (id, query, location, target_count, status, progress, message, priority, industry_category, company_size_min, company_size_max, target_state, bulk_group_id)
+        VALUES (${id}, ${jobParams.query}, ${jobParams.location}, ${jobParams.count}, 'pending', 0, 'Queued...', ${jobParams.priority || 'normal'}, ${jobParams.industryCategory}, ${jobParams.companySizeMin}, ${jobParams.companySizeMax}, ${jobParams.targetState}, ${null})`;
+
+      return {
+        id,
+        query: jobParams.query,
+        location: jobParams.location,
+        target_count: jobParams.count,
+        status: 'pending',
+        progress: 0,
+        message: 'Queued...',
+        priority: jobParams.priority || 'normal',
+        created_at: new Date().toISOString(),
+        industry_category: jobParams.industryCategory ?? null,
+        company_size_min: jobParams.companySizeMin ?? null,
+        company_size_max: jobParams.companySizeMax ?? null,
+        target_state: jobParams.targetState ?? null,
+      };
+    } else {
+      // New object signature
+      jobParams = params;
+      const id = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      await sql`INSERT INTO jobs (id, query, location, target_count, status, progress, message, priority, industry_category, company_size_min, company_size_max, target_state, bulk_group_id)
+        VALUES (${id}, ${jobParams.query}, ${jobParams.location}, ${jobParams.count}, 'pending', 0, 'Queued...', ${jobParams.priority || 'normal'}, ${jobParams.industryCategory ?? null}, ${jobParams.companySizeMin ?? null}, ${jobParams.companySizeMax ?? null}, ${jobParams.targetState ?? null}, ${jobParams.bulkGroupId ?? null})`;
+
+      return {
+        id,
+        query: jobParams.query,
+        location: jobParams.location,
+        target_count: jobParams.count,
+        status: 'pending',
+        progress: 0,
+        message: 'Queued...',
+        priority: jobParams.priority || 'normal',
+        created_at: new Date().toISOString(),
+        industry_category: jobParams.industryCategory ?? null,
+        company_size_min: jobParams.companySizeMin ?? null,
+        company_size_max: jobParams.companySizeMax ?? null,
+        target_state: jobParams.targetState ?? null,
+      };
+    }
+  }, 'createJob');
 }
