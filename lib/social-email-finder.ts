@@ -10,8 +10,11 @@ export interface SocialEmailResult {
   socialUrl?: string;
 }
 
-// Email regex
-const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi;
+// Email regex - stricter to avoid false positives
+const EMAIL_REGEX = /\b[a-zA-Z][a-zA-Z0-9._%+-]{0,63}@[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(?:\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})*\.[a-zA-Z]{2,10}\b/gi;
+
+// File extensions to reject
+const REJECT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.css', '.js', '.pdf'];
 
 // Domains to skip
 const SKIP_EMAIL_DOMAINS = [
@@ -20,6 +23,28 @@ const SKIP_EMAIL_DOMAINS = [
   'google.com', 'gmail.com', 'yahoo.com', 'hotmail.com',
   'sentry.io', 'wixpress.com', 'wordpress.com', 'squarespace.com',
 ];
+
+/**
+ * Validate email format
+ */
+function isValidEmail(email: string): boolean {
+  const parts = email.split('@');
+  if (parts.length !== 2) return false;
+
+  const [localPart, domain] = parts;
+  if (!localPart || localPart.length === 0 || localPart.length > 64) return false;
+  if (/^\d+$/.test(localPart)) return false;
+  if (/^\d{3,}/.test(localPart)) return false;
+  if (!domain || domain.length < 4 || !domain.includes('.')) return false;
+
+  const lowerEmail = email.toLowerCase();
+  if (REJECT_EXTENSIONS.some(ext => lowerEmail.endsWith(ext))) return false;
+
+  const tld = domain.split('.').pop() || '';
+  if (tld.length < 2 || tld.length > 10 || /\d/.test(tld)) return false;
+
+  return true;
+}
 
 // User agents for rotation
 const USER_AGENTS = [
@@ -95,6 +120,9 @@ function extractEmailsFromHtml(html: string, websiteDomain?: string): string[] {
     const email = match.toLowerCase();
     if (seen.has(email)) continue;
     seen.add(email);
+
+    // Validate email format
+    if (!isValidEmail(email)) continue;
 
     const emailDomain = email.split('@')[1];
 

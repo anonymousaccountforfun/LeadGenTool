@@ -22,8 +22,12 @@ const CONTACT_PATHS = [
   '/support',
 ];
 
-// Email regex pattern
-const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi;
+// Email regex pattern - stricter to avoid false positives
+// Must start with a letter and not contain file extensions
+const EMAIL_REGEX = /\b[a-zA-Z][a-zA-Z0-9._%+-]{0,63}@[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(?:\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})*\.[a-zA-Z]{2,10}\b/gi;
+
+// File extensions to reject (false positives from image/asset URLs)
+const REJECT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.css', '.js', '.pdf'];
 
 // Domains to skip (generic, Google, etc.)
 const SKIP_DOMAINS = [
@@ -120,6 +124,39 @@ function scoreEmail(email: string, websiteDomain: string, foundOnContactPage: bo
 }
 
 /**
+ * Validate email format and quality
+ */
+function isValidEmail(email: string): boolean {
+  // Must have exactly one @
+  const parts = email.split('@');
+  if (parts.length !== 2) return false;
+
+  const [localPart, domain] = parts;
+
+  // Local part validation
+  if (!localPart || localPart.length === 0 || localPart.length > 64) return false;
+  if (/^\d+$/.test(localPart)) return false; // All numbers = likely phone number
+  if (/^\d{3,}/.test(localPart)) return false; // Starts with 3+ digits = likely phone number
+  if (localPart.startsWith('.') || localPart.endsWith('.')) return false;
+  if (localPart.includes('..')) return false;
+
+  // Domain validation
+  if (!domain || domain.length < 4) return false;
+  if (!domain.includes('.')) return false;
+
+  // Check for file extensions (false positives)
+  const lowerEmail = email.toLowerCase();
+  if (REJECT_EXTENSIONS.some(ext => lowerEmail.endsWith(ext))) return false;
+
+  // Check domain TLD
+  const tld = domain.split('.').pop() || '';
+  if (tld.length < 2 || tld.length > 10) return false;
+  if (/\d/.test(tld)) return false; // TLD shouldn't have numbers
+
+  return true;
+}
+
+/**
  * Extract emails from HTML content
  */
 function extractEmails(html: string, websiteDomain: string, isContactPage: boolean): SimpleEmailResult[] {
@@ -131,6 +168,9 @@ function extractEmails(html: string, websiteDomain: string, isContactPage: boole
     const email = match.toLowerCase();
     if (seen.has(email)) continue;
     seen.add(email);
+
+    // Validate email format
+    if (!isValidEmail(email)) continue;
 
     const emailDomain = email.split('@')[1];
 
