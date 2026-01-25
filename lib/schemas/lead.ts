@@ -10,7 +10,11 @@ export const leadFormSchema = z.object({
     .email("Please enter a valid email address"),
   phone: z
     .string()
-    .regex(/^[\d\s\-+()]*$/, "Please enter a valid phone number")
+    .regex(/^[\d\s\-+()]*$/, "Phone number can only contain digits, spaces, dashes, parentheses, and +")
+    .refine(
+      (val) => !val || (val.replace(/\D/g, "").length >= 7 && val.replace(/\D/g, "").length <= 15),
+      "Phone number must contain between 7 and 15 digits"
+    )
     .optional()
     .or(z.literal("")),
   company: z
