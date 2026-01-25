@@ -328,10 +328,28 @@ export default function Home() {
     setError(null);
     setBusinesses([]);
 
-    // Build location string with state if provided
+    // Build location string based on location type
     let fullLocation = filters.location;
-    if (filters.targetState && !fullLocation.includes(filters.targetState)) {
-      fullLocation = fullLocation ? `${fullLocation}, ${filters.targetState}` : filters.targetState;
+    const state = filters.targetState;
+
+    if (filters.locationType === 'radius' && filters.radius && fullLocation) {
+      // For radius search: "within 25 miles of Hicksville, NY"
+      fullLocation = state
+        ? `within ${filters.radius} miles of ${fullLocation}, ${state}`
+        : `within ${filters.radius} miles of ${fullLocation}`;
+    } else if (filters.locationType === 'county' && fullLocation) {
+      // For county search: "Nassau County, NY"
+      const countyName = fullLocation.toLowerCase().includes('county')
+        ? fullLocation
+        : `${fullLocation} County`;
+      fullLocation = state ? `${countyName}, ${state}` : countyName;
+    } else {
+      // For city search: "Austin, TX"
+      if (state && fullLocation && !fullLocation.includes(state)) {
+        fullLocation = `${fullLocation}, ${state}`;
+      } else if (state && !fullLocation) {
+        fullLocation = state;
+      }
     }
 
     try {
@@ -347,6 +365,8 @@ export default function Home() {
           companySizeMax: filters.companySizeMax,
           targetState: filters.targetState || null,
           b2cOnly: filters.b2cOnly,
+          locationType: filters.locationType,
+          radius: filters.radius,
         }),
       });
       const { jobId } = await response.json();
