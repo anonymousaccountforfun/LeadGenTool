@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "LeadGenTool - Find Business Emails",
+  "version": "1.0.0",
+  "description": "Find verified email addresses for businesses on Google Maps. Quick email discovery and lead saving.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.google.com/maps/*",
+    "https://maps.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/maps/*",
+        "https://maps.google.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content-styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["https://www.google.com/*", "https://maps.google.com/*"]
+    }
+  ]
+}
