@@ -2,10 +2,25 @@
 import { useState } from 'react';
 
 const EXAMPLES = [
-  { label: 'Med Spa', query: 'med spa', location: 'Miami, FL', state: 'FL' },
-  { label: 'Restaurants', query: 'restaurant', location: 'Austin, TX', state: 'TX' },
-  { label: 'Hair Salons', query: 'hair salon', location: 'Los Angeles, CA', state: 'CA' },
-  { label: 'Fitness Studios', query: 'fitness studio', location: 'Denver, CO', state: 'CO' },
+  { label: 'Med Spa', query: 'med spa', location: 'Miami', state: 'FL', locationType: 'city' as const },
+  { label: 'Restaurants', query: 'restaurant', location: 'Austin', state: 'TX', locationType: 'city' as const },
+  { label: 'Hair Salons', query: 'hair salon', location: 'Nassau County', state: 'NY', locationType: 'county' as const },
+  { label: 'Fitness Studios', query: 'fitness studio', location: 'Denver', state: 'CO', locationType: 'radius' as const, radius: 25 },
+];
+
+export const LOCATION_TYPES = [
+  { value: 'city', label: 'City' },
+  { value: 'county', label: 'County' },
+  { value: 'radius', label: 'Radius from City' },
+];
+
+export const RADIUS_OPTIONS = [
+  { value: 5, label: '5 miles' },
+  { value: 10, label: '10 miles' },
+  { value: 15, label: '15 miles' },
+  { value: 20, label: '20 miles' },
+  { value: 25, label: '25 miles' },
+  { value: 50, label: '50 miles' },
 ];
 
 // B2C-focused industry categories
@@ -53,6 +68,8 @@ export const COMPANY_SIZE_OPTIONS = [
   { value: '500+', label: '500+ employees (Corporate)', min: 500, max: null },
 ];
 
+export type LocationType = 'city' | 'county' | 'radius';
+
 export interface SearchFilters {
   query: string;
   location: string;
@@ -62,6 +79,8 @@ export interface SearchFilters {
   companySizeMin: number | null;
   companySizeMax: number | null;
   b2cOnly: boolean;
+  locationType: LocationType;
+  radius: number | null;
 }
 
 interface LeadFormProps {
@@ -78,6 +97,8 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
   const [companySize, setCompanySize] = useState('');
   const [b2cOnly, setB2cOnly] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [locationType, setLocationType] = useState<LocationType>('city');
+  const [radius, setRadius] = useState(25);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,15 +106,23 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
 
     const sizeOption = COMPANY_SIZE_OPTIONS.find(opt => opt.value === companySize);
 
+    // Build the location string based on location type
+    let locationString = location.trim();
+    if (locationType === 'county' && locationString && !locationString.toLowerCase().includes('county')) {
+      locationString = `${locationString} County`;
+    }
+
     onSubmit({
       query: query.trim(),
-      location: location.trim(),
+      location: locationString,
       count,
       industryCategory,
       targetState,
       companySizeMin: sizeOption?.min ?? null,
       companySizeMax: sizeOption?.max ?? null,
       b2cOnly,
+      locationType,
+      radius: locationType === 'radius' ? radius : null,
     });
   };
 
@@ -101,6 +130,8 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
     setQuery(ex.query);
     setLocation(ex.location);
     if (ex.state) setTargetState(ex.state);
+    if (ex.locationType) setLocationType(ex.locationType);
+    if ('radius' in ex && ex.radius) setRadius(ex.radius);
   };
 
   return (
@@ -123,31 +154,100 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-[#ccd6f6] mb-2">State</label>
-            <select
-              value={targetState}
-              onChange={(e) => setTargetState(e.target.value)}
-              className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
-              disabled={isLoading}
-            >
-              {US_STATES.map(state => (
-                <option key={state.value} value={state.value}>{state.label}</option>
-              ))}
-            </select>
+        {/* Location Section */}
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-[#ccd6f6] mb-2">State</label>
+              <select
+                value={targetState}
+                onChange={(e) => setTargetState(e.target.value)}
+                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                disabled={isLoading}
+              >
+                {US_STATES.map(state => (
+                  <option key={state.value} value={state.value}>{state.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#ccd6f6] mb-2">Search by</label>
+              <select
+                value={locationType}
+                onChange={(e) => setLocationType(e.target.value as LocationType)}
+                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                disabled={isLoading}
+              >
+                {LOCATION_TYPES.map(type => (
+                  <option key={type.value} value={type.value}>{type.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-[#ccd6f6] mb-2">City <span className="text-[#8892b0] font-normal">(optional)</span></label>
-            <input
-              type="text"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="e.g., Austin, Miami..."
-              className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
-              disabled={isLoading}
-            />
-          </div>
+
+          {/* Dynamic location input based on type */}
+          {locationType === 'city' && (
+            <div>
+              <label className="block text-sm font-medium text-[#ccd6f6] mb-2">
+                City <span className="text-[#8892b0] font-normal">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="e.g., Austin, Miami, Hicksville..."
+                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                disabled={isLoading}
+              />
+            </div>
+          )}
+
+          {locationType === 'county' && (
+            <div>
+              <label className="block text-sm font-medium text-[#ccd6f6] mb-2">County Name</label>
+              <input
+                type="text"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="e.g., Nassau, Orange, Cook..."
+                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                disabled={isLoading}
+              />
+              <p className="text-xs text-[#8892b0] mt-1">We&apos;ll search &quot;{location || 'County'} County, {targetState || 'State'}&quot;</p>
+            </div>
+          )}
+
+          {locationType === 'radius' && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-[#ccd6f6] mb-2">Center City</label>
+                <input
+                  type="text"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="e.g., Hicksville, Garden City..."
+                  className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                  disabled={isLoading}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[#ccd6f6] mb-2">Search Radius</label>
+                <select
+                  value={radius}
+                  onChange={(e) => setRadius(parseInt(e.target.value))}
+                  className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                  disabled={isLoading}
+                >
+                  {RADIUS_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <p className="col-span-2 text-xs text-[#8892b0]">
+                We&apos;ll search within {radius} miles of {location || 'your city'}, {targetState || 'State'}
+              </p>
+            </div>
+          )}
         </div>
 
         <div>
