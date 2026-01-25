@@ -4,7 +4,7 @@ import { withRetry, DatabaseConnectionError, isRetryableError } from './errors';
 // Cache the database connection
 let dbInstance: NeonQueryFunction<false, false> | null = null;
 
-function getDb(): NeonQueryFunction<false, false> {
+export function getDb(): NeonQueryFunction<false, false> {
   if (!dbInstance) {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) throw new DatabaseConnectionError(new Error('DATABASE_URL environment variable is not set'));
@@ -195,16 +195,69 @@ export async function updateJobStatus(id: string, status: string, progress: numb
   }, 'updateJobStatus');
 }
 
-export async function addBusiness(business: Omit<Business, 'id' | 'created_at'>): Promise<void> {
+export async function addBusiness(business: Omit<Business, 'id' | 'created_at'>): Promise<boolean> {
   return withDbRetry(async () => {
     const sql = getDb();
-    await sql`INSERT INTO businesses (job_id, name, website, email, email_source, email_confidence, phone, address, instagram, rating, review_count, years_in_business, source, employee_count, industry_code, is_b2b) VALUES (${business.job_id}, ${business.name}, ${business.website}, ${business.email}, ${business.email_source}, ${business.email_confidence}, ${business.phone}, ${business.address}, ${business.instagram}, ${business.rating}, ${business.review_count}, ${business.years_in_business}, ${business.source}, ${business.employee_count}, ${business.industry_code}, ${business.is_b2b ?? true})`;
+    // Use ON CONFLICT to handle duplicates - update if better data available
+    const result = await sql`
+      INSERT INTO businesses (job_id, name, website, email, email_source, email_confidence, phone, address, instagram, rating, review_count, years_in_business, source, employee_count, industry_code, is_b2b)
+      VALUES (${business.job_id}, ${business.name}, ${business.website}, ${business.email}, ${business.email_source}, ${business.email_confidence}, ${business.phone}, ${business.address}, ${business.instagram}, ${business.rating}, ${business.review_count}, ${business.years_in_business}, ${business.source}, ${business.employee_count}, ${business.industry_code}, ${business.is_b2b ?? true})
+      ON CONFLICT (job_id, LOWER(name)) DO UPDATE SET
+        website = COALESCE(NULLIF(businesses.website, ''), EXCLUDED.website),
+        email = COALESCE(businesses.email, EXCLUDED.email),
+        email_source = COALESCE(businesses.email_source, EXCLUDED.email_source),
+        email_confidence = GREATEST(businesses.email_confidence, EXCLUDED.email_confidence),
+        phone = COALESCE(NULLIF(businesses.phone, ''), EXCLUDED.phone),
+        address = COALESCE(NULLIF(businesses.address, ''), EXCLUDED.address),
+        rating = COALESCE(businesses.rating, EXCLUDED.rating),
+        review_count = GREATEST(COALESCE(businesses.review_count, 0), COALESCE(EXCLUDED.review_count, 0))
+      RETURNING id
+    `;
+    return result.length > 0;
   }, 'addBusiness');
 }
 
 export async function getBusinessesByJobId(jobId: string): Promise<Business[]> {
   const sql = getDb();
   const rows = await sql`SELECT * FROM businesses WHERE job_id = ${jobId} ORDER BY email_confidence DESC`;
+  return rows.map(row => ({
+    id: row.id, job_id: row.job_id, name: row.name, website: row.website,
+    email: row.email, email_source: row.email_source, email_confidence: row.email_confidence || 0,
+    phone: row.phone, address: row.address, instagram: row.instagram,
+    rating: row.rating, review_count: row.review_count, years_in_business: row.years_in_business,
+    source: row.source, created_at: row.created_at,
+    employee_count: row.employee_count || null,
+    industry_code: row.industry_code || null,
+    is_b2b: row.is_b2b ?? true,
+  }));
+}
+
+export async function updateBusinessEmail(
+  id: number,
+  email: string,
+  emailSource: string,
+  emailConfidence: number
+): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`
+      UPDATE businesses
+      SET email = ${email},
+          email_source = ${emailSource},
+          email_confidence = ${emailConfidence}
+      WHERE id = ${id} AND (email IS NULL OR email_confidence < ${emailConfidence})
+    `;
+  }, 'updateBusinessEmail');
+}
+
+export async function getBusinessesWithoutEmail(jobId: string, limit: number = 50): Promise<Business[]> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT * FROM businesses
+    WHERE job_id = ${jobId} AND email IS NULL AND website IS NOT NULL
+    ORDER BY rating DESC NULLS LAST
+    LIMIT ${limit}
+  `;
   return rows.map(row => ({
     id: row.id, job_id: row.job_id, name: row.name, website: row.website,
     email: row.email, email_source: row.email_source, email_confidence: row.email_confidence || 0,
