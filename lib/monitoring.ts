@@ -601,6 +601,330 @@ export function getAlertHistory(): Alert[] {
   return [...alertHistory].reverse();
 }
 
+// ============ API Quota Tracking ============
+
+export interface QuotaMetrics {
+  api: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  percentUsed: number;
+  resetAt: Date;
+  projectedExhaustion?: Date;
+}
+
+const quotaState: Record<string, { used: number; limit: number; resetAt: Date }> = {};
+
+/**
+ * Update quota usage for an API
+ */
+export function updateQuotaUsage(api: string, used: number, limit: number, resetAt?: Date): void {
+  const defaultResetAt = new Date();
+  defaultResetAt.setUTCHours(24, 0, 0, 0);
+
+  quotaState[api] = {
+    used,
+    limit,
+    resetAt: resetAt || defaultResetAt,
+  };
+
+  // Check for quota alerts
+  const percentUsed = (used / limit) * 100;
+  if (percentUsed >= 100) {
+    checkAlerts(); // Will trigger quota exhaustion alert
+  } else if (percentUsed >= 80) {
+    logger.warn('API quota warning', { api, percentUsed, used, limit });
+  }
+}
+
+/**
+ * Get quota metrics for all APIs
+ */
+export function getQuotaMetrics(): QuotaMetrics[] {
+  const now = new Date();
+
+  return Object.entries(quotaState).map(([api, data]) => {
+    const percentUsed = (data.used / data.limit) * 100;
+
+    // Project exhaustion based on usage rate
+    let projectedExhaustion: Date | undefined;
+    if (data.used > 0) {
+      const hoursElapsed = Math.max(1, 24 - (data.resetAt.getTime() - now.getTime()) / (60 * 60 * 1000));
+      const hourlyRate = data.used / hoursElapsed;
+      if (hourlyRate > 0) {
+        const hoursUntilExhausted = (data.limit - data.used) / hourlyRate;
+        const hoursUntilReset = (data.resetAt.getTime() - now.getTime()) / (60 * 60 * 1000);
+        if (hoursUntilExhausted < hoursUntilReset) {
+          projectedExhaustion = new Date(now.getTime() + hoursUntilExhausted * 60 * 60 * 1000);
+        }
+      }
+    }
+
+    return {
+      api,
+      used: data.used,
+      limit: data.limit,
+      remaining: Math.max(0, data.limit - data.used),
+      percentUsed,
+      resetAt: data.resetAt,
+      projectedExhaustion,
+    };
+  });
+}
+
+// ============ Search Time Percentiles ============
+
+export interface SearchTimePercentiles {
+  p50: number;
+  p95: number;
+  p99: number;
+  min: number;
+  max: number;
+  count: number;
+}
+
+const searchDurations: number[] = [];
+const MAX_SEARCH_DURATIONS = 1000;
+
+/**
+ * Record a search duration
+ */
+export function recordSearchDuration(durationMs: number): void {
+  searchDurations.push(durationMs);
+  if (searchDurations.length > MAX_SEARCH_DURATIONS) {
+    searchDurations.shift();
+  }
+}
+
+/**
+ * Get search time percentiles
+ */
+export function getSearchTimePercentiles(): SearchTimePercentiles {
+  if (searchDurations.length === 0) {
+    return { p50: 0, p95: 0, p99: 0, min: 0, max: 0, count: 0 };
+  }
+
+  const sorted = [...searchDurations].sort((a, b) => a - b);
+  const len = sorted.length;
+
+  return {
+    p50: sorted[Math.floor(len * 0.5)] || 0,
+    p95: sorted[Math.floor(len * 0.95)] || 0,
+    p99: sorted[Math.floor(len * 0.99)] || 0,
+    min: sorted[0] || 0,
+    max: sorted[len - 1] || 0,
+    count: len,
+  };
+}
+
+// ============ Source Success/Failure Tracking ============
+
+export interface SourceSuccessMetrics {
+  source: string;
+  totalRequests: number;
+  successes: number;
+  failures: number;
+  successRate: number;
+  avgDurationMs: number;
+  lastSuccessAt?: Date;
+  lastFailureAt?: Date;
+  lastError?: string;
+}
+
+/**
+ * Get detailed source success metrics
+ */
+export function getSourceSuccessMetrics(): SourceSuccessMetrics[] {
+  return Array.from(metricsStore.sources.values()).map((s) => ({
+    source: s.source,
+    totalRequests: s.attempts,
+    successes: s.successes,
+    failures: s.failures,
+    successRate: s.attempts > 0 ? (s.successes / s.attempts) * 100 : 100,
+    avgDurationMs: s.avgResponseTime,
+    lastError: s.lastError,
+  }));
+}
+
+// ============ Usage Reports ============
+
+export interface UsageReport {
+  period: 'daily' | 'weekly' | 'monthly';
+  startDate: Date;
+  endDate: Date;
+  summary: {
+    totalSearches: number;
+    successfulSearches: number;
+    failedSearches: number;
+    totalLeadsFound: number;
+    totalEmailsFound: number;
+    avgSearchDurationMs: number;
+  };
+  topQueries: Array<{ query: string; count: number }>;
+  topLocations: Array<{ location: string; count: number }>;
+  sourcePerformance: Array<{
+    source: string;
+    requests: number;
+    successRate: number;
+    avgLeadsPerRequest: number;
+  }>;
+  errorBreakdown: Record<string, number>;
+  quotaUsage: QuotaMetrics[];
+}
+
+/**
+ * Generate a usage report for a time period
+ */
+export function generateUsageReport(period: 'daily' | 'weekly' | 'monthly'): UsageReport {
+  const now = new Date();
+  let startDate: Date;
+
+  switch (period) {
+    case 'daily':
+      startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      break;
+    case 'weekly':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case 'monthly':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+  }
+
+  const jobs = Array.from(metricsStore.jobs.values()).filter(
+    (j) => j.startedAt >= startDate.getTime()
+  );
+
+  // Calculate summaries
+  const successful = jobs.filter((j) => j.status === 'completed');
+  const failed = jobs.filter((j) => j.status === 'failed');
+  const totalLeads = jobs.reduce((sum, j) => sum + j.actualCount, 0);
+  const totalEmails = jobs.reduce((sum, j) => sum + j.emailsFound, 0);
+  const durations = jobs
+    .filter((j) => j.completedAt)
+    .map((j) => j.completedAt! - j.startedAt);
+  const avgDuration = durations.length > 0
+    ? durations.reduce((a, b) => a + b, 0) / durations.length
+    : 0;
+
+  // Count queries and locations
+  const queryCount = new Map<string, number>();
+  const locationCount = new Map<string, number>();
+  for (const job of jobs) {
+    queryCount.set(job.query, (queryCount.get(job.query) || 0) + 1);
+    if (job.location) {
+      locationCount.set(job.location, (locationCount.get(job.location) || 0) + 1);
+    }
+  }
+
+  // Source performance
+  const sourcePerf = Array.from(metricsStore.sources.values()).map((s) => ({
+    source: s.source,
+    requests: s.attempts,
+    successRate: s.attempts > 0 ? (s.successes / s.attempts) * 100 : 100,
+    avgLeadsPerRequest: s.successes > 0 ? s.totalLeads / s.successes : 0,
+  }));
+
+  // Error breakdown
+  const errorBreakdown: Record<string, number> = {};
+  const recentErrors = metricsStore.recentErrors.filter(
+    (e) => e.timestamp >= startDate.getTime()
+  );
+  for (const error of recentErrors) {
+    const type = error.error.includes('timeout') ? 'timeout'
+      : error.error.includes('rate limit') ? 'rate_limit'
+      : error.error.includes('network') ? 'network'
+      : 'other';
+    errorBreakdown[type] = (errorBreakdown[type] || 0) + 1;
+  }
+
+  return {
+    period,
+    startDate,
+    endDate: now,
+    summary: {
+      totalSearches: jobs.length,
+      successfulSearches: successful.length,
+      failedSearches: failed.length,
+      totalLeadsFound: totalLeads,
+      totalEmailsFound: totalEmails,
+      avgSearchDurationMs: avgDuration,
+    },
+    topQueries: Array.from(queryCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([query, count]) => ({ query, count })),
+    topLocations: Array.from(locationCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([location, count]) => ({ location, count })),
+    sourcePerformance: sourcePerf,
+    errorBreakdown,
+    quotaUsage: getQuotaMetrics(),
+  };
+}
+
+// ============ Dashboard Data ============
+
+export interface DashboardData {
+  overview: {
+    jobsLast24h: number;
+    successRate: number;
+    leadsFound: number;
+    emailsFound: number;
+  };
+  performance: SearchTimePercentiles;
+  quotas: QuotaMetrics[];
+  sources: SourceSuccessMetrics[];
+  alerts: Alert[];
+  recentSearches: Array<{
+    query: string;
+    location: string | null;
+    results: number;
+    status: string;
+    timestamp: number;
+  }>;
+}
+
+/**
+ * Get comprehensive dashboard data
+ */
+export function getDashboardData(): DashboardData {
+  const now = Date.now();
+  const last24h = now - 24 * 60 * 60 * 1000;
+
+  const recentJobs = Array.from(metricsStore.jobs.values()).filter(
+    (j) => j.startedAt >= last24h
+  );
+  const completed = recentJobs.filter((j) => j.status === 'completed');
+  const successRate = recentJobs.length > 0
+    ? (completed.length / recentJobs.length) * 100
+    : 100;
+
+  return {
+    overview: {
+      jobsLast24h: recentJobs.length,
+      successRate,
+      leadsFound: recentJobs.reduce((sum, j) => sum + j.actualCount, 0),
+      emailsFound: recentJobs.reduce((sum, j) => sum + j.emailsFound, 0),
+    },
+    performance: getSearchTimePercentiles(),
+    quotas: getQuotaMetrics(),
+    sources: getSourceSuccessMetrics(),
+    alerts: getAlertHistory().slice(0, 10),
+    recentSearches: Array.from(metricsStore.jobs.values())
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, 20)
+      .map((j) => ({
+        query: j.query,
+        location: j.location,
+        results: j.actualCount,
+        status: j.status,
+        timestamp: j.startedAt,
+      })),
+  };
+}
+
 // ============ Reset (for testing) ============
 
 export function resetMetrics(): void {
@@ -610,4 +934,6 @@ export function resetMetrics(): void {
   metricsStore.recentErrors.length = 0;
   metricsStore.dailyStats.clear();
   alertHistory.length = 0;
+  searchDurations.length = 0;
+  Object.keys(quotaState).forEach((key) => delete quotaState[key]);
 }
