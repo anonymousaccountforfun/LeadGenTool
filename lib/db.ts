@@ -4,7 +4,7 @@ import { withRetry, DatabaseConnectionError, isRetryableError } from './errors';
 // Cache the database connection
 let dbInstance: NeonQueryFunction<false, false> | null = null;
 
-function getDb(): NeonQueryFunction<false, false> {
+export function getDb(): NeonQueryFunction<false, false> {
   if (!dbInstance) {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) throw new DatabaseConnectionError(new Error('DATABASE_URL environment variable is not set'));
@@ -195,10 +195,25 @@ export async function updateJobStatus(id: string, status: string, progress: numb
   }, 'updateJobStatus');
 }
 
-export async function addBusiness(business: Omit<Business, 'id' | 'created_at'>): Promise<void> {
+export async function addBusiness(business: Omit<Business, 'id' | 'created_at'>): Promise<boolean> {
   return withDbRetry(async () => {
     const sql = getDb();
-    await sql`INSERT INTO businesses (job_id, name, website, email, email_source, email_confidence, phone, address, instagram, rating, review_count, years_in_business, source, employee_count, industry_code, is_b2b) VALUES (${business.job_id}, ${business.name}, ${business.website}, ${business.email}, ${business.email_source}, ${business.email_confidence}, ${business.phone}, ${business.address}, ${business.instagram}, ${business.rating}, ${business.review_count}, ${business.years_in_business}, ${business.source}, ${business.employee_count}, ${business.industry_code}, ${business.is_b2b ?? true})`;
+    // Use ON CONFLICT to handle duplicates - update if better data available
+    const result = await sql`
+      INSERT INTO businesses (job_id, name, website, email, email_source, email_confidence, phone, address, instagram, rating, review_count, years_in_business, source, employee_count, industry_code, is_b2b)
+      VALUES (${business.job_id}, ${business.name}, ${business.website}, ${business.email}, ${business.email_source}, ${business.email_confidence}, ${business.phone}, ${business.address}, ${business.instagram}, ${business.rating}, ${business.review_count}, ${business.years_in_business}, ${business.source}, ${business.employee_count}, ${business.industry_code}, ${business.is_b2b ?? true})
+      ON CONFLICT (job_id, LOWER(name)) DO UPDATE SET
+        website = COALESCE(NULLIF(businesses.website, ''), EXCLUDED.website),
+        email = COALESCE(businesses.email, EXCLUDED.email),
+        email_source = COALESCE(businesses.email_source, EXCLUDED.email_source),
+        email_confidence = GREATEST(businesses.email_confidence, EXCLUDED.email_confidence),
+        phone = COALESCE(NULLIF(businesses.phone, ''), EXCLUDED.phone),
+        address = COALESCE(NULLIF(businesses.address, ''), EXCLUDED.address),
+        rating = COALESCE(businesses.rating, EXCLUDED.rating),
+        review_count = GREATEST(COALESCE(businesses.review_count, 0), COALESCE(EXCLUDED.review_count, 0))
+      RETURNING id
+    `;
+    return result.length > 0;
   }, 'addBusiness');
 }
 

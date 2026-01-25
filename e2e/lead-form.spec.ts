@@ -1,66 +1,118 @@
 import { test, expect } from "@playwright/test";
 
-test.describe("Lead Capture Form", () => {
-  test("should display the form fields", async ({ page }) => {
+test.describe("Search Form", () => {
+  test("should display all form fields", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.getByLabel(/name/i)).toBeVisible();
-    await expect(page.getByLabel(/email/i)).toBeVisible();
-    await expect(page.getByLabel(/phone/i)).toBeVisible();
-    await expect(page.getByLabel(/company/i)).toBeVisible();
-    await expect(page.getByLabel(/message/i)).toBeVisible();
-    await expect(page.getByRole("button", { name: /send message/i })).toBeVisible();
+    // Business type query input
+    await expect(page.getByPlaceholder(/restaurant, hair salon/i)).toBeVisible();
+
+    // State dropdown
+    await expect(page.getByText(/^state$/i)).toBeVisible();
+
+    // Search by dropdown (city/county/radius)
+    await expect(page.getByText(/search by/i)).toBeVisible();
+
+    // Number of leads dropdown
+    await expect(page.getByText(/number of leads/i)).toBeVisible();
+
+    // Submit button
+    await expect(page.getByRole("button", { name: /find leads/i })).toBeVisible();
   });
 
-  test("should show validation errors for empty required fields", async ({
-    page,
-  }) => {
+  test("should show advanced filters when clicked", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByRole("button", { name: /send message/i }).click();
+    // Click advanced filters toggle
+    await page.getByRole("button", { name: /advanced filters/i }).click();
 
-    // Browser validation should prevent submission
-    await expect(page.getByLabel(/name/i)).toBeFocused();
+    // Check that advanced options are visible
+    await expect(page.getByText(/industry category/i)).toBeVisible();
+    await expect(page.getByText(/company size/i)).toBeVisible();
+    await expect(page.getByText(/consumer businesses only/i)).toBeVisible();
   });
 
-  test("should show validation error for invalid email", async ({ page }) => {
+  test("should have state dropdown with all US states", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByLabel(/name/i).fill("Test User");
-    await page.getByLabel(/email/i).fill("invalid-email");
-    await page.getByLabel(/message/i).fill("This is a test message that is long enough.");
+    // Find and click the state dropdown
+    const stateSelect = page.locator('select').first();
+    await expect(stateSelect).toBeVisible();
 
-    await page.getByRole("button", { name: /send message/i }).click();
-
-    // Browser's native email validation kicks in
-    const emailInput = page.getByLabel(/email/i);
-    await expect(emailInput).toBeFocused();
+    // Check for some state options
+    await expect(stateSelect.locator('option', { hasText: 'California' })).toBeAttached();
+    await expect(stateSelect.locator('option', { hasText: 'Texas' })).toBeAttached();
+    await expect(stateSelect.locator('option', { hasText: 'New York' })).toBeAttached();
   });
 
-  test("should show validation error for short message", async ({ page }) => {
+  test("should have location type options", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByLabel(/name/i).fill("Test User");
-    await page.getByLabel(/email/i).fill("test@example.com");
-    await page.getByLabel(/message/i).fill("Short");
+    // The second select is the location type
+    const locationTypeSelect = page.locator('select').nth(1);
+    await expect(locationTypeSelect).toBeVisible();
 
-    await page.getByRole("button", { name: /send message/i }).click();
+    // Verify we can select different location types
+    await locationTypeSelect.selectOption('city');
+    await expect(locationTypeSelect).toHaveValue('city');
 
-    await expect(page.getByText(/at least 10 characters/i)).toBeVisible();
+    await locationTypeSelect.selectOption('county');
+    await expect(locationTypeSelect).toHaveValue('county');
+
+    await locationTypeSelect.selectOption('radius');
+    await expect(locationTypeSelect).toHaveValue('radius');
   });
 
-  test("should successfully submit a valid form", async ({ page }) => {
+  test("should show city input when City is selected", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByLabel(/name/i).fill("Test User");
-    await page.getByLabel(/email/i).fill("test@example.com");
-    await page.getByLabel(/phone/i).fill("555-123-4567");
-    await page.getByLabel(/company/i).fill("Test Company");
-    await page.getByLabel(/message/i).fill("This is a test message for the lead capture form.");
+    // City should be selected by default
+    await expect(page.getByPlaceholder(/austin, miami/i)).toBeVisible();
+  });
 
-    await page.getByRole("button", { name: /send message/i }).click();
+  test("should show county input when County is selected", async ({ page }) => {
+    await page.goto("/");
 
-    await expect(page.getByText(/message sent/i)).toBeVisible();
-    await expect(page.getByText(/thank you/i)).toBeVisible();
+    // Select County from the dropdown
+    const locationTypeSelect = page.locator('select').nth(1);
+    await locationTypeSelect.selectOption('county');
+
+    // Check for county-specific input
+    await expect(page.getByText(/county name/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/nassau, orange, cook/i)).toBeVisible();
+  });
+
+  test("should show radius options when Radius is selected", async ({ page }) => {
+    await page.goto("/");
+
+    // Select Radius from the dropdown
+    const locationTypeSelect = page.locator('select').nth(1);
+    await locationTypeSelect.selectOption('radius');
+
+    // Check for radius-specific options
+    await expect(page.getByText(/center city/i)).toBeVisible();
+    await expect(page.getByText(/search radius/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/hicksville, garden city/i)).toBeVisible();
+  });
+
+  test("should disable submit when query is empty", async ({ page }) => {
+    await page.goto("/");
+
+    const submitButton = page.getByRole("button", { name: /find leads/i });
+
+    // Button should be disabled when query is empty
+    await expect(submitButton).toBeDisabled();
+  });
+
+  test("should enable submit when query is filled", async ({ page }) => {
+    await page.goto("/");
+
+    // Fill in the query
+    await page.getByPlaceholder(/restaurant, hair salon/i).fill("dentist");
+
+    const submitButton = page.getByRole("button", { name: /find leads/i });
+
+    // Button should be enabled
+    await expect(submitButton).toBeEnabled();
   });
 });

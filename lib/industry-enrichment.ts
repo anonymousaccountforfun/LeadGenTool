@@ -747,7 +747,7 @@ export function parseIndustryData(
     }
   }
 
-  return { type: industryType, data } as IndustrySpecificData;
+  return { type: industryType, data } as unknown as IndustrySpecificData;
 }
 
 function isArrayField(industryType: IndustryType, fieldName: string): boolean {

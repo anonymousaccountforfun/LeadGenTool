@@ -14,9 +14,9 @@ import {
 } from '@/lib/api-auth';
 import { getJob, getBusinessesByJobId } from '@/lib/db';
 import {
-  generateCSV,
-  generateEnhancedCSV,
-  generateJSON,
+  generateCsv,
+  generateExcel,
+  generateJson,
   type ExportFormat,
 } from '@/lib/export';
 
@@ -104,15 +104,23 @@ export async function GET(
 
     switch (format) {
       case 'json':
-        content = generateJSON(exportData);
+        content = JSON.stringify(generateJson(businesses as any), null, 2);
         contentType = 'application/json';
         filename = `leads-${id}.json`;
         break;
 
-      case 'enhanced':
-        content = generateEnhancedCSV(exportData);
-        contentType = 'text/csv';
-        filename = `leads-enhanced-${id}.csv`;
+      case 'excel':
+        const excelBuffer = await generateExcel(businesses as any, job?.query || 'leads');
+        return new NextResponse(new Uint8Array(excelBuffer), {
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': `attachment; filename="leads-${id}.xlsx"`,
+            ...corsHeaders,
+            'X-RateLimit-Remaining': String(rateLimitInfo.remaining),
+            'X-RateLimit-Limit': String(rateLimitInfo.limit),
+            'X-RateLimit-Reset': rateLimitInfo.resetAt.toISOString(),
+          },
+        });
         break;
 
       case 'hubspot':
@@ -123,19 +131,19 @@ export async function GET(
         const { generateHubSpotCsv, generateSalesforceCsv, generatePipedriveCsv, generateMailchimpCsv } = await import('@/lib/export');
         switch (format) {
           case 'hubspot':
-            content = generateHubSpotCsv(exportData);
+            content = generateHubSpotCsv(businesses as any);
             break;
           case 'salesforce':
-            content = generateSalesforceCsv(exportData);
+            content = generateSalesforceCsv(businesses as any);
             break;
           case 'pipedrive':
-            content = generatePipedriveCsv(exportData);
+            content = generatePipedriveCsv(businesses as any);
             break;
           case 'mailchimp':
-            content = generateMailchimpCsv(exportData);
+            content = generateMailchimpCsv(businesses as any);
             break;
           default:
-            content = generateCSV(exportData);
+            content = generateCsv(businesses as any);
         }
         contentType = 'text/csv';
         filename = `leads-${format}-${id}.csv`;
@@ -143,7 +151,7 @@ export async function GET(
 
       case 'csv':
       default:
-        content = generateCSV(exportData);
+        content = generateCsv(businesses as any);
         contentType = 'text/csv';
         filename = `leads-${id}.csv`;
         break;

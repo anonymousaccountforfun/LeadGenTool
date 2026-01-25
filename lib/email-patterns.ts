@@ -76,6 +76,8 @@ export type EmailPattern =
   | 'last.first' // smith.john@
   | 'lastf' // smithj@
   | 'fl' // js@
+  | 'info' // info@
+  | 'contact' // contact@
   | 'unknown';
 
 /**
@@ -133,6 +135,8 @@ export function learnPattern(
     'last.first': 0,
     lastf: 0,
     fl: 0,
+    info: 0,
+    contact: 0,
     unknown: 0,
   };
 
@@ -159,6 +163,7 @@ export function learnPattern(
     pattern: bestPattern,
     examples: emails.map((e) => e.email),
     timestamp: Date.now(),
+    confidence: bestCount > 0 ? bestCount / emails.length : 0,
   });
 
   return bestPattern;
@@ -872,7 +877,8 @@ export function getPatternStats(): {
   const distribution: Record<EmailPattern, number> = {
     'first.last': 0, firstlast: 0, first_last: 0, flast: 0,
     firstl: 0, 'f.last': 0, first: 0, last: 0,
-    lastfirst: 0, 'last.first': 0, lastf: 0, fl: 0, unknown: 0,
+    lastfirst: 0, 'last.first': 0, lastf: 0, fl: 0,
+    info: 0, contact: 0, unknown: 0,
   };
 
   let totalDomains = 0;
