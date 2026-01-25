@@ -9,7 +9,17 @@ import {
 } from './stealth';
 import { getPlaywrightProxyConfig, trackProxyRequest, reportProxySuccess, reportProxyFailure, shouldUseDirect } from './proxy';
 import { acquireRateLimit } from './rate-limiter';
-import { searchWithApis, isApiFallbackAvailable, shouldPreferApis } from './api-fallback';
+import {
+  searchWithApis,
+  isApiFallbackAvailable,
+  shouldPreferApis,
+  recordSourceUsage,
+  resetSessionTracking,
+  getApiAvailabilityStatus,
+  canApisFullfillRequest,
+  getCostSavings,
+  getSourceUsageSummary,
+} from './api-fallback';
 import { withPooledBrowser, warmupBrowserPool } from './browser-pool';
 import {
   type DataSource,
@@ -1636,14 +1646,21 @@ async function runSource(
   location: string,
   limit: number,
   onProgress?: (message: string) => void
-): Promise<{ source: DataSource; results: ScrapedBusiness[]; error?: Error }> {
+): Promise<{ source: DataSource; results: ScrapedBusiness[]; error?: Error; durationMs: number }> {
+  const startTime = Date.now();
   try {
     const scraper = getScraperForSource(source);
     const results = await withPooledBrowser(browser => scraper(browser, query, location, limit, onProgress));
-    return { source, results };
+    const durationMs = Date.now() - startTime;
+
+    // Track source usage (scraping sources are not APIs)
+    recordSourceUsage(SOURCE_NAMES[source], results.length, durationMs, false);
+
+    return { source, results, durationMs };
   } catch (error) {
+    const durationMs = Date.now() - startTime;
     console.error(`${SOURCE_NAMES[source]} scrape failed:`, error);
-    return { source, results: [], error: error as Error };
+    return { source, results: [], error: error as Error, durationMs };
   }
 }
 
@@ -1664,11 +1681,20 @@ async function runSourcesParallel(
   const results = await Promise.allSettled(promises);
 
   const allResults: ScrapedBusiness[] = [];
+  let totalDuration = 0;
+  let successCount = 0;
+
   for (const result of results) {
-    if (result.status === 'fulfilled' && result.value.results.length > 0) {
-      allResults.push(...result.value.results);
+    if (result.status === 'fulfilled') {
+      if (result.value.results.length > 0) {
+        allResults.push(...result.value.results);
+        successCount++;
+      }
+      totalDuration = Math.max(totalDuration, result.value.durationMs);
     }
   }
+
+  console.log(`[Scraper] Parallel search completed: ${successCount}/${sources.length} sources returned ${allResults.length} results in ${(totalDuration / 1000).toFixed(1)}s`);
 
   return allResults;
 }
@@ -1728,16 +1754,37 @@ export async function discover(
   // Warmup browser pool in the background
   warmupBrowserPool().catch(() => {});
 
+  // Reset session tracking for this new search
+  resetSessionTracking();
+
   const updateProgress = (msg: string) => onProgress?.(msg, Math.min(40, Math.round((results.length / count) * 40)));
+
+  // API-First Mode: Check API availability and prioritize APIs
+  const apiStatus = getApiAvailabilityStatus();
+  const availableApis = apiStatus.filter(a => a.available);
+  const apiCapacity = canApisFullfillRequest(count - results.length);
+
+  if (availableApis.length > 0) {
+    console.log(`[API-First] Available APIs: ${availableApis.map(a => `${a.name} (${a.remaining} remaining)`).join(', ')}`);
+    console.log(`[API-First] Can fulfill ${apiCapacity.estimatedFromApis}/${count} from APIs, needs scraping: ${apiCapacity.needsScraping}`);
+  }
 
   // API Fallback: Try official APIs first if configured and preferred
   if (shouldPreferApis() && (type === 'local' || type === 'hybrid')) {
     try {
-      onProgress?.('Searching via official APIs...', 5);
+      // Show which APIs are being used
+      const apiNames = apiCapacity.recommendedApis.join(', ');
+      onProgress?.(`Searching via ${apiNames || 'official APIs'}...`, 5);
+
+      const apiStartTime = Date.now();
       const apiResults = await searchWithApis(query, location, count, updateProgress);
+      const apiDuration = Date.now() - apiStartTime;
+
       if (apiResults.length > 0) {
         results.push(...apiResults);
-        onProgress?.(`Found ${results.length} results via APIs`, 20);
+        // Track API usage for cost savings
+        recordSourceUsage('official_apis', apiResults.length, apiDuration, true);
+        onProgress?.(`Found ${results.length} results via APIs (${(apiDuration / 1000).toFixed(1)}s)`, 20);
       }
     } catch (error) {
       console.error('API fallback failed, continuing with scraping:', error);
@@ -1760,7 +1807,14 @@ export async function discover(
         quality_score: b.quality.overallScore,
         quality_flags: b.quality.flags,
       }));
-      onProgress?.(`Found ${finalResults.length} unique businesses`, 40);
+
+      // Log source usage summary
+      const usageSummary = getSourceUsageSummary();
+      const costSavings = getCostSavings();
+      console.log(`[API-First] Results: ${usageSummary.apiResults} from APIs (${usageSummary.apiPercentage.toFixed(0)}%), ${usageSummary.scrapedResults} from scraping`);
+      console.log(`[API-First] Cost savings: ~$${costSavings.estimatedCostSavedUsd.toFixed(3)}, time saved: ${(costSavings.estimatedTimeSavedMs / 1000).toFixed(1)}s`);
+
+      onProgress?.(`Found ${finalResults.length} unique businesses (100% from APIs)`, 40);
       // Cache results for future queries
       cacheSearchResults(query, location, finalResults).catch(() => {});
       cacheBusinesses(finalResults, 'api').catch(() => {});
@@ -1937,6 +1991,20 @@ export async function discover(
     });
     const stats = getCacheStats();
     console.log(`[Cache] Cached ${finalResults.length} results. Stats: hits=${stats.hits}, misses=${stats.misses}, hitRate=${(stats.hitRate * 100).toFixed(1)}%`);
+  }
+
+  // Log final source usage summary
+  const usageSummary = getSourceUsageSummary();
+  const costSavings = getCostSavings();
+  if (usageSummary.totalResults > 0) {
+    console.log(`[API-First] Final summary:`);
+    console.log(`  - Total results: ${usageSummary.totalResults}`);
+    console.log(`  - From APIs: ${usageSummary.apiResults} (${usageSummary.apiPercentage.toFixed(0)}%)`);
+    console.log(`  - From scraping: ${usageSummary.scrapedResults} (${(100 - usageSummary.apiPercentage).toFixed(0)}%)`);
+    console.log(`  - Sources used: ${usageSummary.sources.map(s => `${s.name} (${s.results})`).join(', ')}`);
+    if (costSavings.estimatedTimeSavedMs > 0) {
+      console.log(`  - Estimated time saved: ${(costSavings.estimatedTimeSavedMs / 1000).toFixed(1)}s`);
+    }
   }
 
   return finalResults;

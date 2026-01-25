@@ -230,6 +230,194 @@ export function getQuotaStats(): Record<string, { used: number; limit: number; r
   return stats;
 }
 
+// ============ API-First Mode: Source Tracking & Cost Savings ============
+
+interface SourceUsageRecord {
+  source: string;
+  resultsFound: number;
+  timestamp: number;
+  durationMs: number;
+  isApi: boolean;
+}
+
+interface CostSavings {
+  apiCalls: number;
+  scrapingAvoided: number;
+  estimatedTimeSavedMs: number;
+  estimatedCostSavedUsd: number;
+}
+
+// Track source usage for the current session
+const sessionSourceUsage: SourceUsageRecord[] = [];
+
+// Estimated costs per operation (for tracking savings)
+const OPERATION_COSTS = {
+  // Scraping costs (compute, proxy, time)
+  scrapingPerResult: 0.002, // $0.002 per scraped result
+  scrapingTimeMs: 2000, // ~2 seconds per result
+
+  // API costs (mostly free tier)
+  googlePlacesPerCall: 0.017, // $0.017 per Places call (but first $200 free)
+  yelpFusionPerCall: 0, // Free tier
+  foursquarePerCall: 0, // Free tier (100k/month)
+  herePerCall: 0, // Free tier (250k/month)
+  tomtomPerCall: 0, // Free tier (2500/day)
+  apiTimeMs: 300, // ~300ms per API call
+};
+
+/**
+ * Record source usage for tracking
+ */
+export function recordSourceUsage(
+  source: string,
+  resultsFound: number,
+  durationMs: number,
+  isApi: boolean
+): void {
+  sessionSourceUsage.push({
+    source,
+    resultsFound,
+    timestamp: Date.now(),
+    durationMs,
+    isApi,
+  });
+}
+
+/**
+ * Get cost savings from using APIs over scraping
+ */
+export function getCostSavings(): CostSavings {
+  const apiUsage = sessionSourceUsage.filter(u => u.isApi);
+  const totalApiResults = apiUsage.reduce((sum, u) => sum + u.resultsFound, 0);
+  const totalApiTime = apiUsage.reduce((sum, u) => sum + u.durationMs, 0);
+
+  // Calculate what scraping would have cost
+  const scrapingCostAvoided = totalApiResults * OPERATION_COSTS.scrapingPerResult;
+  const scrapingTimeAvoided = totalApiResults * OPERATION_COSTS.scrapingTimeMs;
+
+  return {
+    apiCalls: apiUsage.length,
+    scrapingAvoided: totalApiResults,
+    estimatedTimeSavedMs: scrapingTimeAvoided - totalApiTime,
+    estimatedCostSavedUsd: Math.max(0, scrapingCostAvoided),
+  };
+}
+
+/**
+ * Get detailed API availability status for display
+ */
+export interface ApiAvailabilityStatus {
+  name: string;
+  available: boolean;
+  remaining: number;
+  limit: number;
+  percentUsed: number;
+  priority: number;
+  estimatedResults: number;
+}
+
+export function getApiAvailabilityStatus(): ApiAvailabilityStatus[] {
+  const apis = getAvailableApis();
+  const quotaStats = getQuotaStats();
+
+  // Estimate how many results each API can provide
+  const resultsPerCall: Record<string, number> = {
+    googlePlaces: 15, // ~15 results per search
+    yelpFusion: 40, // Up to 50 per search
+    foursquare: 40, // Up to 50 per search
+    here: 80, // Up to 100 per search
+    tomtom: 80, // Up to 100 per search
+  };
+
+  return apis.map(api => {
+    const apiKey = api.name.toLowerCase().replace(' ', '');
+    const normalizedKey = apiKey === 'googleplaces' ? 'googlePlaces'
+      : apiKey === 'yelpfusion' ? 'yelpFusion'
+      : apiKey;
+    const stats = quotaStats[normalizedKey] || { used: 0, limit: 1000, remaining: 1000 };
+
+    return {
+      name: api.name,
+      available: api.isAvailable(),
+      remaining: stats.remaining,
+      limit: stats.limit,
+      percentUsed: stats.limit > 0 ? (stats.used / stats.limit) * 100 : 0,
+      priority: api.priority,
+      estimatedResults: stats.remaining * (resultsPerCall[normalizedKey] || 20),
+    };
+  }).sort((a, b) => a.priority - b.priority);
+}
+
+/**
+ * Check if APIs can satisfy a request without scraping
+ */
+export function canApisFullfillRequest(requestedCount: number): {
+  canFulfill: boolean;
+  estimatedFromApis: number;
+  needsScraping: boolean;
+  recommendedApis: string[];
+} {
+  const availableApis = getApiAvailabilityStatus().filter(a => a.available);
+  const totalEstimated = availableApis.reduce((sum, a) => sum + a.estimatedResults, 0);
+
+  // Select APIs that should be used (sorted by priority)
+  const recommendedApis = availableApis
+    .filter(a => a.estimatedResults > 0)
+    .slice(0, 3) // Top 3 APIs
+    .map(a => a.name);
+
+  return {
+    canFulfill: totalEstimated >= requestedCount,
+    estimatedFromApis: Math.min(totalEstimated, requestedCount),
+    needsScraping: totalEstimated < requestedCount,
+    recommendedApis,
+  };
+}
+
+/**
+ * Get session source usage summary
+ */
+export function getSourceUsageSummary(): {
+  sources: { name: string; results: number; isApi: boolean }[];
+  totalResults: number;
+  apiResults: number;
+  scrapedResults: number;
+  apiPercentage: number;
+} {
+  const sourceMap = new Map<string, { results: number; isApi: boolean }>();
+
+  for (const usage of sessionSourceUsage) {
+    const existing = sourceMap.get(usage.source) || { results: 0, isApi: usage.isApi };
+    existing.results += usage.resultsFound;
+    sourceMap.set(usage.source, existing);
+  }
+
+  const sources = Array.from(sourceMap.entries()).map(([name, data]) => ({
+    name,
+    results: data.results,
+    isApi: data.isApi,
+  }));
+
+  const totalResults = sources.reduce((sum, s) => sum + s.results, 0);
+  const apiResults = sources.filter(s => s.isApi).reduce((sum, s) => sum + s.results, 0);
+  const scrapedResults = totalResults - apiResults;
+
+  return {
+    sources,
+    totalResults,
+    apiResults,
+    scrapedResults,
+    apiPercentage: totalResults > 0 ? (apiResults / totalResults) * 100 : 0,
+  };
+}
+
+/**
+ * Reset session tracking (call at start of new search)
+ */
+export function resetSessionTracking(): void {
+  sessionSourceUsage.length = 0;
+}
+
 // ============ Type Definitions ============
 
 interface GooglePlaceResult {

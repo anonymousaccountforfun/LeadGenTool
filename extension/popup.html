@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LeadGenTool</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64ffda" stroke-width="2">
+          <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>LeadGenTool</span>
+      </div>
+      <a href="https://leadgentool.app" target="_blank" class="app-link" title="Open App">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M15 3h6v6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M10 14L21 3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </a>
+    </header>
+
+    <!-- Not on Maps Message -->
+    <div id="not-maps" class="section hidden">
+      <div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#5a5a7e" stroke-width="1.5">
+          <path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h3>Navigate to Google Maps</h3>
+        <p>Open Google Maps and search for businesses to find their contact info.</p>
+        <a href="https://www.google.com/maps" target="_blank" class="btn btn-primary">
+          Open Google Maps
+        </a>
+      </div>
+    </div>
+
+    <!-- On Maps - Main Content -->
+    <div id="on-maps" class="section hidden">
+      <!-- Page Status -->
+      <div id="page-status" class="status-bar">
+        <span class="status-dot active"></span>
+        <span id="business-count">0 businesses detected</span>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions">
+        <button id="find-emails-btn" class="btn btn-primary btn-block">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Find Emails for Visible Businesses
+        </button>
+        <button id="show-overlay-btn" class="btn btn-secondary btn-block">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Toggle Email Overlay
+        </button>
+      </div>
+
+      <!-- Results -->
+      <div id="results" class="results hidden">
+        <div class="results-header">
+          <h4>Found Leads</h4>
+          <button id="save-all-btn" class="btn btn-sm">Save All</button>
+        </div>
+        <div id="results-list" class="results-list">
+          <!-- Results populated by JS -->
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p>Finding emails...</p>
+      </div>
+    </div>
+
+    <!-- Saved Leads -->
+    <div class="section saved-section">
+      <div class="saved-header">
+        <h4>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Saved Leads
+        </h4>
+        <span id="saved-count" class="count-badge">0</span>
+      </div>
+      <div id="saved-list" class="saved-list">
+        <p class="empty-message">No saved leads yet</p>
+      </div>
+      <button id="export-btn" class="btn btn-secondary btn-block hidden">
+        Export Saved Leads
+      </button>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <a href="https://leadgentool.app" target="_blank">Full App</a>
+      <span>|</span>
+      <a href="https://leadgentool.app/help" target="_blank">Help</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

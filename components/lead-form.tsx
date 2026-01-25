@@ -1,5 +1,13 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+
+interface SearchSuggestion {
+  type: 'related' | 'location' | 'trending' | 'autocomplete';
+  text: string;
+  query?: string;
+  location?: string;
+  reason?: string;
+}
 
 const EXAMPLES = [
   { label: 'Med Spa', query: 'med spa', location: 'Miami', state: 'FL', locationType: 'city' as const },
@@ -83,12 +91,23 @@ export interface SearchFilters {
   radius: number | null;
 }
 
+export interface BulkSearchFilters {
+  query: string;
+  locations: string; // CSV format: "City, State" per line
+  count: number;
+  industryCategory: string;
+  companySizeMin: number | null;
+  companySizeMax: number | null;
+  b2cOnly: boolean;
+}
+
 interface LeadFormProps {
   onSubmit: (filters: SearchFilters) => void;
+  onBulkSubmit?: (filters: BulkSearchFilters) => void;
   isLoading: boolean;
 }
 
-export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
+export function LeadForm({ onSubmit, onBulkSubmit, isLoading }: LeadFormProps) {
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState('');
   const [count, setCount] = useState(25);
@@ -100,11 +119,132 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
   const [locationType, setLocationType] = useState<LocationType>('city');
   const [radius, setRadius] = useState(25);
 
+  // Bulk search state
+  const [isBulkMode, setIsBulkMode] = useState(false);
+  const [bulkLocations, setBulkLocations] = useState('');
+  const [bulkLocationCount, setBulkLocationCount] = useState(0);
+
+  // Parse bulk locations to count them
+  useEffect(() => {
+    const lines = bulkLocations.trim().split(/[\n\r]+/).filter(l => l.trim());
+    const validLines = lines.filter(line => {
+      const match = line.trim().match(/^([^,]+),\s*([A-Za-z]{2,})$/);
+      return match !== null;
+    });
+    setBulkLocationCount(validLines.length);
+  }, [bulkLocations]);
+
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Debounced fetch for autocomplete
+  const fetchSuggestions = useCallback(async (searchQuery: string) => {
+    if (searchQuery.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/suggestions?q=${encodeURIComponent(searchQuery)}&type=autocomplete`);
+      if (response.ok) {
+        const data = await response.json();
+        setSuggestions(data.suggestions || []);
+      }
+    } catch {
+      // Silently fail - suggestions are optional
+    }
+  }, []);
+
+  // Debounce autocomplete requests
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (query && !isLoading) {
+        fetchSuggestions(query);
+      }
+    }, 150);
+
+    return () => clearTimeout(timeoutId);
+  }, [query, isLoading, fetchSuggestions]);
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(event.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSuggestionSelect = (suggestion: SearchSuggestion) => {
+    if (suggestion.query) {
+      setQuery(suggestion.query);
+    }
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev =>
+          prev < suggestions.length - 1 ? prev + 1 : 0
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedSuggestionIndex(prev =>
+          prev > 0 ? prev - 1 : suggestions.length - 1
+        );
+        break;
+      case 'Enter':
+        if (selectedSuggestionIndex >= 0) {
+          e.preventDefault();
+          handleSuggestionSelect(suggestions[selectedSuggestionIndex]);
+        }
+        break;
+      case 'Escape':
+        setShowSuggestions(false);
+        setSelectedSuggestionIndex(-1);
+        break;
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
 
     const sizeOption = COMPANY_SIZE_OPTIONS.find(opt => opt.value === companySize);
+
+    // Handle bulk search
+    if (isBulkMode && onBulkSubmit) {
+      if (bulkLocationCount === 0) return;
+      onBulkSubmit({
+        query: query.trim(),
+        locations: bulkLocations,
+        count,
+        industryCategory,
+        companySizeMin: sizeOption?.min ?? null,
+        companySizeMax: sizeOption?.max ?? null,
+        b2cOnly,
+      });
+      return;
+    }
 
     // Build the location string based on location type
     let locationString = location.trim();
@@ -135,34 +275,132 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      <div className="text-center mb-10">
-        <h1 className="text-4xl font-bold text-white mb-3">Lead <span className="text-[#64ffda]">Generator</span></h1>
-        <p className="text-[#8892b0] text-lg">Find B2C business leads across the US</p>
+    <div className="w-full max-w-2xl mx-auto px-4 sm:px-0">
+      <div className="text-center mb-8 sm:mb-10">
+        <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 sm:mb-3">Lead <span className="text-[#64ffda]">Generator</span></h1>
+        <p className="text-[#8892b0] text-base sm:text-lg">Find B2C business leads across the US</p>
       </div>
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div>
+      <form onSubmit={handleSubmit} className="space-y-5 sm:space-y-6">
+        <div className="relative">
           <label className="block text-sm font-medium text-[#ccd6f6] mb-2">What type of business?</label>
           <input
+            ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setShowSuggestions(true);
+              setSelectedSuggestionIndex(-1);
+            }}
+            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            onKeyDown={handleKeyDown}
             placeholder="e.g., restaurant, hair salon, gym, dentist..."
-            className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+            className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda] touch-manipulation"
             required
             disabled={isLoading}
+            autoComplete="off"
+            role="combobox"
+            aria-expanded={showSuggestions}
+            aria-autocomplete="list"
+            aria-controls="business-suggestions"
           />
+          {/* Autocomplete Dropdown */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div
+              ref={suggestionsRef}
+              id="business-suggestions"
+              role="listbox"
+              className="absolute z-50 w-full mt-1 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg shadow-lg max-h-60 overflow-auto"
+            >
+              {suggestions.map((suggestion, index) => (
+                <button
+                  key={`${suggestion.text}-${index}`}
+                  type="button"
+                  role="option"
+                  aria-selected={index === selectedSuggestionIndex}
+                  onClick={() => handleSuggestionSelect(suggestion)}
+                  className={`w-full px-4 py-3 text-left text-sm transition-colors touch-manipulation flex items-center gap-2 ${
+                    index === selectedSuggestionIndex
+                      ? 'bg-[#2a2a4e] text-[#64ffda]'
+                      : 'text-white hover:bg-[#2a2a4e] active:bg-[#2a2a4e]'
+                  }`}
+                >
+                  <svg className="w-4 h-4 text-[#8892b0] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <span className="truncate">{suggestion.text}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Location Section */}
+        {/* Search Mode Toggle */}
+        {onBulkSubmit && (
+          <div className="flex items-center justify-center gap-4 p-3 bg-[#12121a] rounded-lg border border-[#2a2a4e]">
+            <button
+              type="button"
+              onClick={() => setIsBulkMode(false)}
+              className={`px-4 py-2 min-h-[40px] rounded-lg text-sm font-medium transition-colors touch-manipulation ${
+                !isBulkMode
+                  ? 'bg-[#64ffda] text-[#0a0a0f]'
+                  : 'bg-[#1a1a2e] text-[#8892b0] hover:text-white'
+              }`}
+            >
+              Single Location
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsBulkMode(true)}
+              className={`px-4 py-2 min-h-[40px] rounded-lg text-sm font-medium transition-colors touch-manipulation ${
+                isBulkMode
+                  ? 'bg-[#64ffda] text-[#0a0a0f]'
+                  : 'bg-[#1a1a2e] text-[#8892b0] hover:text-white'
+              }`}
+            >
+              Bulk Search
+            </button>
+          </div>
+        )}
+
+        {/* Bulk Search Mode */}
+        {isBulkMode && onBulkSubmit ? (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-[#ccd6f6] mb-2">
+                Locations <span className="text-[#8892b0] font-normal">(one per line: City, State)</span>
+              </label>
+              <textarea
+                value={bulkLocations}
+                onChange={(e) => setBulkLocations(e.target.value)}
+                placeholder="Austin, TX&#10;Dallas, TX&#10;Houston, TX&#10;San Antonio, TX"
+                rows={6}
+                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda] touch-manipulation resize-y min-h-[120px]"
+                disabled={isLoading}
+              />
+              <div className="flex items-center justify-between mt-2 text-xs text-[#8892b0]">
+                <span>
+                  {bulkLocationCount > 0 ? (
+                    <span className="text-[#64ffda]">{bulkLocationCount} valid location{bulkLocationCount !== 1 ? 's' : ''}</span>
+                  ) : (
+                    'Enter locations in "City, State" format'
+                  )}
+                </span>
+                <span className="text-gray-500">Max 20 locations</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+        /* Location Section - Single Location Mode */
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          {/* Stack on mobile (grid-cols-1), side-by-side on larger screens (sm:grid-cols-2) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-[#ccd6f6] mb-2">State</label>
               <select
                 value={targetState}
                 onChange={(e) => setTargetState(e.target.value)}
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               >
                 {US_STATES.map(state => (
@@ -175,7 +413,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
               <select
                 value={locationType}
                 onChange={(e) => setLocationType(e.target.value as LocationType)}
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               >
                 {LOCATION_TYPES.map(type => (
@@ -196,7 +434,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder="e.g., Austin, Miami, Hicksville..."
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               />
             </div>
@@ -210,7 +448,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder="e.g., Nassau, Orange, Cook..."
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               />
               <p className="text-xs text-[#8892b0] mt-1">We&apos;ll search &quot;{location || 'County'} County, {targetState || 'State'}&quot;</p>
@@ -218,7 +456,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
           )}
 
           {locationType === 'radius' && (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-[#ccd6f6] mb-2">Center City</label>
                 <input
@@ -226,7 +464,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
                   placeholder="e.g., Hicksville, Garden City..."
-                  className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda]"
+                  className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base placeholder-[#5a5a7e] focus:outline-none focus:border-[#64ffda] touch-manipulation"
                   disabled={isLoading}
                 />
               </div>
@@ -235,7 +473,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
                 <select
                   value={radius}
                   onChange={(e) => setRadius(parseInt(e.target.value))}
-                  className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                  className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
                   disabled={isLoading}
                 >
                   {RADIUS_OPTIONS.map(opt => (
@@ -243,19 +481,22 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
                   ))}
                 </select>
               </div>
-              <p className="col-span-2 text-xs text-[#8892b0]">
+              <p className="sm:col-span-2 text-xs text-[#8892b0]">
                 We&apos;ll search within {radius} miles of {location || 'your city'}, {targetState || 'State'}
               </p>
             </div>
           )}
         </div>
+        )}
 
         <div>
-          <label className="block text-sm font-medium text-[#ccd6f6] mb-2">Number of leads</label>
+          <label className="block text-sm font-medium text-[#ccd6f6] mb-2">
+            Number of leads {isBulkMode && <span className="text-[#8892b0] font-normal">(per location)</span>}
+          </label>
           <select
             value={count}
             onChange={(e) => setCount(parseInt(e.target.value))}
-            className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+            className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
             disabled={isLoading}
           >
             <option value={25}>25 leads</option>
@@ -264,14 +505,14 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
           </select>
         </div>
 
-        {/* Advanced Filters Toggle */}
+        {/* Advanced Filters Toggle - Touch-friendly */}
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="text-[#64ffda] text-sm hover:underline flex items-center gap-2"
+          className="text-[#64ffda] text-sm hover:underline flex items-center gap-2 py-2 touch-manipulation"
           disabled={isLoading}
         >
-          <span>{showAdvanced ? '▼' : '▶'}</span>
+          <span className="text-base">{showAdvanced ? '▼' : '▶'}</span>
           Advanced Filters
         </button>
 
@@ -282,7 +523,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
               <select
                 value={industryCategory}
                 onChange={(e) => setIndustryCategory(e.target.value)}
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               >
                 {INDUSTRY_CATEGORIES.map(cat => (
@@ -296,7 +537,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
               <select
                 value={companySize}
                 onChange={(e) => setCompanySize(e.target.value)}
-                className="w-full px-4 py-3 bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white focus:outline-none focus:border-[#64ffda]"
+                className="w-full px-4 py-3 min-h-[48px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-lg text-white text-base focus:outline-none focus:border-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               >
                 {COMPANY_SIZE_OPTIONS.map(opt => (
@@ -305,13 +546,13 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
               </select>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 py-1">
               <input
                 type="checkbox"
                 id="b2cOnly"
                 checked={b2cOnly}
                 onChange={(e) => setB2cOnly(e.target.checked)}
-                className="w-4 h-4 rounded border-[#2a2a4e] bg-[#1a1a2e] text-[#64ffda] focus:ring-[#64ffda]"
+                className="w-5 h-5 rounded border-[#2a2a4e] bg-[#1a1a2e] text-[#64ffda] focus:ring-[#64ffda] touch-manipulation"
                 disabled={isLoading}
               />
               <label htmlFor="b2cOnly" className="text-sm text-[#ccd6f6]">
@@ -323,14 +564,20 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
 
         <button
           type="submit"
-          disabled={isLoading || !query.trim()}
-          className="w-full py-4 bg-[#64ffda] text-[#0a0a0f] font-semibold rounded-lg hover:bg-[#7effea] disabled:opacity-50 text-lg"
+          disabled={isLoading || !query.trim() || (isBulkMode && bulkLocationCount === 0)}
+          className="w-full py-4 min-h-[56px] bg-[#64ffda] text-[#0a0a0f] font-semibold rounded-lg hover:bg-[#7effea] active:bg-[#50e6c2] disabled:opacity-50 text-lg touch-manipulation transition-colors"
         >
-          {isLoading ? 'Finding Leads...' : 'Find Leads'}
+          {isLoading
+            ? (isBulkMode ? `Searching ${bulkLocationCount} locations...` : 'Finding Leads...')
+            : (isBulkMode
+              ? `Search ${bulkLocationCount} Location${bulkLocationCount !== 1 ? 's' : ''}`
+              : 'Find Leads'
+            )
+          }
         </button>
       </form>
 
-      <div className="mt-8">
+      <div className="mt-6 sm:mt-8">
         <p className="text-[#8892b0] text-sm mb-3 text-center">Try an example:</p>
         <div className="flex flex-wrap gap-2 justify-center">
           {EXAMPLES.map((ex, i) => (
@@ -338,7 +585,7 @@ export function LeadForm({ onSubmit, isLoading }: LeadFormProps) {
               key={i}
               onClick={() => handleExampleClick(ex)}
               disabled={isLoading}
-              className="px-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a4e] rounded-full text-[#8892b0] text-sm hover:border-[#64ffda] hover:text-[#64ffda] disabled:opacity-50"
+              className="px-4 py-2 min-h-[40px] bg-[#1a1a2e] border border-[#2a2a4e] rounded-full text-[#8892b0] text-sm hover:border-[#64ffda] hover:text-[#64ffda] active:bg-[#2a2a4e] disabled:opacity-50 touch-manipulation transition-colors"
             >
               {ex.label}
             </button>

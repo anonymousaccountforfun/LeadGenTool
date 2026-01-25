@@ -20,6 +20,9 @@ import {
   enrichBusiness,
   deduplicateBusinesses,
   sortByQuality,
+  calculateCrossRefScore,
+  recalculateOverallScore,
+  mergeDuplicates,
 } from '../data-quality';
 import type { ScrapedBusiness } from '../scraper';
 
@@ -636,5 +639,218 @@ describe('sortByQuality', () => {
 
     expect(sorted[0].name).toBe('High Quality');
     expect(sorted[1].name).toBe('Low Quality');
+  });
+});
+
+// ============ Cross-Reference Scoring Tests ============
+
+describe('calculateCrossRefScore', () => {
+  it('returns 0 for single source', () => {
+    expect(calculateCrossRefScore(1, ['google_maps'])).toBe(0);
+  });
+
+  it('returns 0.15 for two sources', () => {
+    expect(calculateCrossRefScore(2, ['google_maps', 'yelp'])).toBe(0.2); // 0.15 + 0.05 premium bonus
+  });
+
+  it('returns higher score for more sources', () => {
+    const twoSources = calculateCrossRefScore(2, ['google_maps', 'yelp']);
+    const threeSources = calculateCrossRefScore(3, ['google_maps', 'yelp', 'bbb']);
+    const fourSources = calculateCrossRefScore(4, ['google_maps', 'yelp', 'bbb', 'yellow_pages']);
+
+    expect(threeSources).toBeGreaterThan(twoSources);
+    expect(fourSources).toBeGreaterThan(threeSources);
+  });
+
+  it('gives bonus for premium source combinations', () => {
+    const genericSources = calculateCrossRefScore(3, ['source1', 'source2', 'source3']);
+    const premiumSources = calculateCrossRefScore(3, ['google_maps', 'yelp', 'bbb']);
+
+    expect(premiumSources).toBeGreaterThan(genericSources);
+  });
+
+  it('caps score at 0.5', () => {
+    const maxSources = calculateCrossRefScore(10, [
+      'google_maps', 'yelp', 'bbb', 'yellow_pages',
+      'source5', 'source6', 'source7', 'source8', 'source9', 'source10'
+    ]);
+    expect(maxSources).toBeLessThanOrEqual(0.5);
+  });
+});
+
+describe('mergeDuplicates', () => {
+  it('merges sources from both businesses', () => {
+    const primary = enrichBusiness({
+      name: "Joe's Pizza",
+      website: 'https://joespizza.com',
+      phone: '(512) 867-5309',
+      address: '123 Main St, Austin, TX 78701',
+      instagram: null,
+      rating: 4.5,
+      review_count: 100,
+      source: 'google_maps',
+    });
+
+    const duplicate = enrichBusiness({
+      name: "Joe's Pizza",
+      website: 'https://joespizza.com',
+      phone: '(512) 867-5309',
+      address: '123 Main St, Austin, TX 78701',
+      instagram: null,
+      rating: 4.3,
+      review_count: 80,
+      source: 'yelp',
+    });
+
+    const merged = mergeDuplicates(primary, duplicate);
+
+    expect(merged.quality.sources).toContain('google_maps');
+    expect(merged.quality.sources).toContain('yelp');
+    expect(merged.quality.sourceCount).toBe(2);
+    expect(merged.quality.crossRefScore).toBeGreaterThan(0);
+  });
+
+  it('fills in missing data from duplicate', () => {
+    const primary = enrichBusiness({
+      name: "Joe's Pizza",
+      website: 'https://joespizza.com',
+      phone: null,
+      address: null,
+      instagram: null,
+      rating: 4.5,
+      review_count: 100,
+      source: 'google_maps',
+    });
+
+    const duplicate = enrichBusiness({
+      name: "Joe's Pizza",
+      website: null,
+      phone: '(512) 867-5309',
+      address: '123 Main St, Austin, TX 78701',
+      instagram: null,
+      rating: null,
+      review_count: null,
+      source: 'yellow_pages',
+    });
+
+    const merged = mergeDuplicates(primary, duplicate);
+
+    expect(merged.phone).toBe('(512) 867-5309');
+    expect(merged.address).toBe('123 Main St, Austin, TX 78701');
+    expect(merged.website).toBe('https://joespizza.com');
+  });
+});
+
+describe('recalculateOverallScore', () => {
+  it('includes cross-reference boost', () => {
+    const quality = {
+      nameQuality: 1,
+      phoneQuality: 1,
+      addressQuality: 0.8,
+      websiteQuality: 1,
+      emailQuality: 0.8,
+      overallScore: 0,
+      flags: [],
+      sourceCount: 3,
+      sources: ['google_maps', 'yelp', 'bbb'],
+      crossRefScore: 0.35,
+    };
+
+    const score = recalculateOverallScore(quality);
+
+    // Base score + crossRefScore should be higher than base alone
+    const baseScore =
+      quality.nameQuality * 0.15 +
+      quality.phoneQuality * 0.25 +
+      quality.addressQuality * 0.15 +
+      quality.websiteQuality * 0.25 +
+      quality.emailQuality * 0.2;
+
+    expect(score).toBeGreaterThan(baseScore);
+    expect(score).toBe(Math.min(baseScore + quality.crossRefScore, 1.0));
+  });
+
+  it('caps score at 1.0', () => {
+    const quality = {
+      nameQuality: 1,
+      phoneQuality: 1,
+      addressQuality: 1,
+      websiteQuality: 1,
+      emailQuality: 1,
+      overallScore: 0,
+      flags: [],
+      sourceCount: 4,
+      sources: ['google_maps', 'yelp', 'bbb', 'yellow_pages'],
+      crossRefScore: 0.5, // High cross-ref score
+    };
+
+    const score = recalculateOverallScore(quality);
+    expect(score).toBeLessThanOrEqual(1.0);
+  });
+});
+
+describe('deduplicateBusinesses with cross-reference', () => {
+  it('boosts score when same business found in multiple sources', () => {
+    const businesses: ScrapedBusiness[] = [
+      {
+        name: "Joe's Pizza",
+        website: 'https://joespizza.com',
+        phone: '(512) 867-5309',
+        address: '123 Main St, Austin, TX 78701',
+        instagram: null,
+        rating: 4.5,
+        review_count: 100,
+        source: 'google_maps',
+      },
+      {
+        name: "Joe's Pizza",
+        website: 'https://joespizza.com',
+        phone: '(512) 867-5309',
+        address: null,
+        instagram: null,
+        rating: 4.3,
+        review_count: 80,
+        source: 'yelp',
+      },
+      {
+        name: "Joe's Pizza Restaurant",
+        website: 'https://joespizza.com',
+        phone: '(512) 867-5309',
+        address: '123 Main St, Austin, TX',
+        instagram: null,
+        rating: null,
+        review_count: null,
+        source: 'bbb',
+      },
+    ];
+
+    const result = deduplicateBusinesses(businesses);
+
+    expect(result.unique.length).toBe(1);
+    expect(result.unique[0].quality.sourceCount).toBe(3);
+    expect(result.unique[0].quality.sources).toContain('google_maps');
+    expect(result.unique[0].quality.sources).toContain('yelp');
+    expect(result.unique[0].quality.sources).toContain('bbb');
+    expect(result.unique[0].quality.crossRefScore).toBeGreaterThan(0);
+  });
+
+  it('does not boost single-source businesses', () => {
+    const businesses: ScrapedBusiness[] = [
+      {
+        name: "Joe's Pizza",
+        website: 'https://joespizza.com',
+        phone: '(512) 867-5309',
+        address: '123 Main St, Austin, TX 78701',
+        instagram: null,
+        rating: 4.5,
+        review_count: 100,
+        source: 'google_maps',
+      },
+    ];
+
+    const result = deduplicateBusinesses(businesses);
+
+    expect(result.unique[0].quality.sourceCount).toBe(1);
+    expect(result.unique[0].quality.crossRefScore).toBe(0);
   });
 });
