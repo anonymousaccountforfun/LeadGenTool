@@ -250,6 +250,20 @@ export async function updateBusinessEmail(
   }, 'updateBusinessEmail');
 }
 
+export async function updateBusinessWebsite(
+  id: number,
+  website: string
+): Promise<void> {
+  return withDbRetry(async () => {
+    const sql = getDb();
+    await sql`
+      UPDATE businesses
+      SET website = ${website}
+      WHERE id = ${id} AND website IS NULL
+    `;
+  }, 'updateBusinessWebsite');
+}
+
 export async function getBusinessesWithoutEmail(jobId: string, limit: number = 50): Promise<Business[]> {
   const sql = getDb();
   const rows = await sql`

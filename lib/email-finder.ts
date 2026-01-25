@@ -1564,6 +1564,8 @@ export async function findEmail(website: string, browser: Browser): Promise<Emai
 import { findEmailSimple } from './simple-email-finder';
 import { findEmailByGenericPattern, type GenericPatternResult } from './email-patterns';
 import { findEmailFromSocial, type SocialEmailResult, type SocialSearchParams } from './social-email-finder';
+import { findMissingWebsite } from './website-discovery';
+import { searchForEmailDirectly, type EmailSearchResult } from './email-search';
 
 export interface EnhancedEmailResult {
   email: string;
@@ -1733,6 +1735,291 @@ export async function findEmailsEnhancedBatch(
         name: business.name,
         email: result?.email || null,
         layer: result?.layer,
+      });
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, businesses.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+
+  return results;
+}
+
+// ============ Comprehensive Email Finding ============
+// Runs all strategies in parallel for maximum find rate
+
+export interface ComprehensiveEmailResult {
+  email: string;
+  source: string;
+  confidence: number;
+  discoveredWebsite?: string;
+}
+
+export interface BusinessForComprehensiveSearch {
+  name: string;
+  location: string;
+  website?: string | null;
+  phone?: string | null;
+  instagram?: string | null;
+  facebook_url?: string | null;
+}
+
+interface ScoredEmail {
+  email: string;
+  source: string;
+  confidence: number;
+  discoveredWebsite?: string;
+}
+
+/**
+ * Find email using comprehensive parallel approach
+ * Runs all branches simultaneously and returns highest confidence result
+ *
+ * Branches:
+ * - A: Website-based (scrape + pattern + social) if website exists
+ * - B: Find missing website, then run Branch A
+ * - C: Direct email search via Google/Bing
+ * - D: Social media extraction
+ * - E: Phone-based lookup if phone exists
+ */
+export async function findEmailComprehensive(
+  business: BusinessForComprehensiveSearch
+): Promise<ComprehensiveEmailResult | null> {
+  const { name, location, website, phone, instagram, facebook_url } = business;
+  const allResults: ScoredEmail[] = [];
+
+  // Extract domain from website if exists
+  const getWebsiteDomain = (url: string): string => {
+    try {
+      const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+      return parsed.hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].toLowerCase();
+    }
+  };
+
+  const websiteDomain = website ? getWebsiteDomain(website) : undefined;
+
+  // Branch A: Website-based finding (if website exists)
+  const branchA = async (): Promise<ScoredEmail[]> => {
+    if (!website) return [];
+    const results: ScoredEmail[] = [];
+
+    try {
+      // Layer 1: Website scraping
+      const websiteResult = await findEmailSimple(website);
+      if (websiteResult) {
+        results.push({
+          email: websiteResult.email,
+          source: `website-${websiteResult.source}`,
+          confidence: websiteResult.confidence,
+        });
+      }
+    } catch {}
+
+    try {
+      // Layer 2: Pattern + SMTP
+      const patternResult = await findEmailByGenericPattern(website);
+      if (patternResult) {
+        results.push({
+          email: patternResult.email,
+          source: patternResult.source,
+          confidence: patternResult.confidence,
+        });
+      }
+    } catch {}
+
+    return results;
+  };
+
+  // Branch B: Find missing website, then search it
+  const branchB = async (): Promise<ScoredEmail[]> => {
+    if (website) return []; // Skip if website already exists
+    const results: ScoredEmail[] = [];
+
+    try {
+      const discovered = await findMissingWebsite(name, location);
+      if (discovered) {
+        const discoveredDomain = getWebsiteDomain(discovered.website);
+
+        // Now run website-based finding on discovered site
+        try {
+          const websiteResult = await findEmailSimple(discovered.website);
+          if (websiteResult) {
+            // Apply discovery confidence penalty
+            const adjustedConfidence = Math.min(0.90, websiteResult.confidence * discovered.confidence);
+            results.push({
+              email: websiteResult.email,
+              source: `discovered-${discovered.source}-${websiteResult.source}`,
+              confidence: adjustedConfidence,
+              discoveredWebsite: discovered.website,
+            });
+          }
+        } catch {}
+
+        try {
+          const patternResult = await findEmailByGenericPattern(discovered.website);
+          if (patternResult) {
+            const adjustedConfidence = Math.min(0.85, patternResult.confidence * discovered.confidence);
+            results.push({
+              email: patternResult.email,
+              source: `discovered-${discovered.source}-pattern`,
+              confidence: adjustedConfidence,
+              discoveredWebsite: discovered.website,
+            });
+          }
+        } catch {}
+      }
+    } catch {}
+
+    return results;
+  };
+
+  // Branch C: Direct email search via search engines
+  const branchC = async (): Promise<ScoredEmail[]> => {
+    try {
+      const searchResults = await searchForEmailDirectly(name, location, phone);
+      return searchResults.map(r => ({
+        email: r.email,
+        source: r.source,
+        confidence: r.confidence,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  // Branch D: Social media extraction
+  const branchD = async (): Promise<ScoredEmail[]> => {
+    try {
+      const socialParams: SocialSearchParams = {
+        name,
+        location,
+        websiteDomain,
+        facebookUrl: facebook_url,
+        instagramUrl: instagram,
+      };
+
+      const socialResult = await findEmailFromSocial(socialParams);
+      if (socialResult) {
+        // Boost confidence if email matches website domain
+        let confidence = socialResult.confidence;
+        if (websiteDomain && socialResult.email.includes(websiteDomain)) {
+          confidence = Math.min(0.90, confidence + 0.10);
+        }
+        return [{
+          email: socialResult.email,
+          source: socialResult.source,
+          confidence,
+        }];
+      }
+    } catch {}
+    return [];
+  };
+
+  // Run all branches in parallel
+  const [resultsA, resultsB, resultsC, resultsD] = await Promise.all([
+    branchA(),
+    branchB(),
+    branchC(),
+    branchD(),
+  ]);
+
+  allResults.push(...resultsA, ...resultsB, ...resultsC, ...resultsD);
+
+  // Deduplicate and apply multi-source bonus
+  const emailScores = new Map<string, ScoredEmail & { sources: string[] }>();
+
+  for (const result of allResults) {
+    const existing = emailScores.get(result.email);
+    if (existing) {
+      existing.sources.push(result.source);
+      // Keep higher confidence and discoveredWebsite
+      if (result.confidence > existing.confidence) {
+        existing.confidence = result.confidence;
+        existing.source = result.source;
+      }
+      if (result.discoveredWebsite && !existing.discoveredWebsite) {
+        existing.discoveredWebsite = result.discoveredWebsite;
+      }
+    } else {
+      emailScores.set(result.email, {
+        ...result,
+        sources: [result.source],
+      });
+    }
+  }
+
+  // Apply multi-source bonus
+  for (const [email, scored] of emailScores) {
+    if (scored.sources.length >= 2) {
+      scored.confidence = Math.min(0.92, scored.confidence + 0.05);
+    }
+    if (scored.sources.length >= 3) {
+      scored.confidence = Math.min(0.95, scored.confidence + 0.05);
+    }
+  }
+
+  // Sort by confidence and return best
+  const sorted = [...emailScores.values()].sort((a, b) => b.confidence - a.confidence);
+
+  if (sorted.length > 0) {
+    const best = sorted[0];
+    return {
+      email: best.email,
+      source: best.source,
+      confidence: best.confidence,
+      discoveredWebsite: best.discoveredWebsite,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Find emails for multiple businesses using comprehensive parallel approach
+ */
+export async function findEmailsComprehensiveBatch(
+  businesses: BusinessForComprehensiveSearch[],
+  options: {
+    concurrency?: number;
+    onProgress?: (completed: number, total: number, result: {
+      name: string;
+      email: string | null;
+      source?: string;
+      discoveredWebsite?: string;
+    }) => void;
+  } = {}
+): Promise<Map<string, ComprehensiveEmailResult | null>> {
+  const { concurrency = 3, onProgress } = options; // Lower concurrency due to parallel sub-searches
+  const results = new Map<string, ComprehensiveEmailResult | null>();
+  const queue = [...businesses];
+  let completed = 0;
+
+  async function worker() {
+    while (queue.length > 0) {
+      const business = queue.shift();
+      if (!business) break;
+
+      let result: ComprehensiveEmailResult | null = null;
+
+      try {
+        result = await findEmailComprehensive(business);
+      } catch {
+        result = null;
+      }
+
+      results.set(business.name, result);
+      completed++;
+
+      onProgress?.(completed, businesses.length, {
+        name: business.name,
+        email: result?.email || null,
+        source: result?.source,
+        discoveredWebsite: result?.discoveredWebsite,
       });
     }
   }
