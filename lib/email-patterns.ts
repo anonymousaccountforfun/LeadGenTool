@@ -311,6 +311,7 @@ export async function detectCatchAll(domain: string): Promise<boolean> {
 
 /**
  * Basic SMTP check for catch-all detection
+ * IMPROVED: Increased timeout from 5s to 8s for slower mail servers
  */
 async function smtpCheck(
   email: string,
@@ -320,7 +321,7 @@ async function smtpCheck(
     const timeout = setTimeout(() => {
       socket.destroy();
       resolve('timeout');
-    }, 5000);
+    }, 8000);
 
     const socket = net.createConnection(25, mxHost);
     let step = 0;
@@ -988,8 +989,9 @@ async function waitForSmtpRateLimit(): Promise<void> {
 
 /**
  * Verify SMTP server responds with handshake (EHLO only, no RCPT TO)
+ * IMPROVED: Increased default timeout for slower mail servers
  */
-async function verifySmtpResponds(mxHost: string, timeoutMs: number = 5000): Promise<boolean> {
+async function verifySmtpResponds(mxHost: string, timeoutMs: number = 8000): Promise<boolean> {
   await waitForSmtpRateLimit();
 
   return new Promise((resolve) => {
@@ -1074,7 +1076,8 @@ export function generateGenericPatterns(domain: string): string[] {
 
 /**
  * Find email by generic pattern with MX/SMTP validation
- * Returns the most likely email (info@) if the domain has valid MX records and SMTP responds
+ * IMPROVED: More lenient - MX existence is sufficient for reasonable confidence
+ * Returns the most likely email (info@) if the domain has valid MX records
  */
 export async function findEmailByGenericPattern(
   websiteOrDomain: string
@@ -1088,27 +1091,50 @@ export async function findEmailByGenericPattern(
   // Step 1: Check MX records
   const mxRecords = await getMxRecordsForDomain(domain);
 
+  // IMPROVED: If no MX records, try A record fallback (some domains receive mail this way)
   if (mxRecords.length === 0) {
-    // No mail servers - can't receive email
-    return null;
+    // Check if domain resolves at all (A record)
+    const hasARecord = await new Promise<boolean>((resolve) => {
+      dns.resolve4(domain, (err, addresses) => {
+        resolve(!err && addresses && addresses.length > 0);
+      });
+    });
+
+    if (!hasARecord) {
+      // Domain doesn't exist - can't receive email
+      return null;
+    }
+
+    // Domain exists but no MX - still might receive email via A record fallback
+    // Return with lower confidence
+    const bestPattern = 'info';
+    const email = `${bestPattern}@${domain}`;
+    return {
+      email,
+      source: 'pattern-mx-only',
+      confidence: 0.55, // Lower confidence for A-record-only domains
+      pattern: bestPattern,
+    };
   }
 
-  // Step 2: Try SMTP handshake with primary MX
+  // Step 2: Try SMTP handshake with primary MX (optional - MX existence is sufficient)
   let smtpVerified = false;
   try {
-    smtpVerified = await verifySmtpResponds(mxRecords[0]);
+    smtpVerified = await verifySmtpResponds(mxRecords[0], 8000); // Increased timeout
   } catch {
-    // SMTP verification failed, but MX exists
+    // SMTP verification failed, but MX exists - still valid
   }
 
   // Step 3: Return the most common generic pattern
   const bestPattern = 'info'; // Most common for small businesses
   const email = `${bestPattern}@${domain}`;
 
+  // IMPROVED: Higher confidence for MX-only (0.65 instead of 0.50)
+  // Having MX records is strong evidence the domain receives email
   return {
     email,
     source: smtpVerified ? 'pattern-smtp-verified' : 'pattern-mx-only',
-    confidence: smtpVerified ? 0.75 : 0.50,
+    confidence: smtpVerified ? 0.75 : 0.65,
     pattern: bestPattern,
   };
 }

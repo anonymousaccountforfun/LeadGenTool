@@ -170,7 +170,26 @@ async function scrapeGoogleMaps(browser: Browser, query: string, location: strin
     onProgress?.(`Searching Google Maps for "${searchQuery}"...`);
     await stealthNavigate(page, `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`, { timeout: 20000 });
     await humanWait(page, 3000, 30);
-    try { await page.waitForSelector('[role="feed"]', { timeout: 15000 }); } catch { await context.close(); return results; }
+
+    // IMPROVED: Try multiple selectors for the results feed
+    const feedSelectors = ['[role="feed"]', '[role="main"] [role="list"]', '.section-layout', 'div[aria-label*="Results"]'];
+    let feedFound = false;
+    for (const selector of feedSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 8000 });
+        feedFound = true;
+        console.log(`[GoogleMaps] Found feed with selector: ${selector}`);
+        break;
+      } catch {
+        console.log(`[GoogleMaps] Selector not found: ${selector}`);
+      }
+    }
+    if (!feedFound) {
+      console.log('[GoogleMaps] No feed selector found, aborting');
+      await context.close();
+      return results;
+    }
+
     onProgress?.('Loading more results...');
     // Scroll until we have enough listings or hit the end
     // Scale scroll attempts based on target: more results = more scrolling
@@ -178,20 +197,47 @@ async function scrapeGoogleMaps(browser: Browser, query: string, location: strin
     let lastCount = 0;
     let noNewResultsCount = 0;
     for (let i = 0; i < maxScrollAttempts; i++) {
-      await page.evaluate(() => { const feed = document.querySelector('[role="feed"]'); if (feed) feed.scrollTop = feed.scrollHeight; });
-      await humanWait(page, 2000, 25); // Slightly faster scrolling for volume
-      const currentCount = await page.$$eval('[role="feed"] > div > div > a', els => els.length);
+      // IMPROVED: Try multiple scroll containers
+      await page.evaluate(() => {
+        const selectors = ['[role="feed"]', '[role="main"] [role="list"]', '.section-layout', 'div[aria-label*="Results"]'];
+        for (const sel of selectors) {
+          const feed = document.querySelector(sel);
+          if (feed) { feed.scrollTop = feed.scrollHeight; break; }
+        }
+      });
+      await humanWait(page, 2000, 25);
+
+      // IMPROVED: Try multiple listing selectors for count
+      const currentCount = await page.evaluate(() => {
+        const listingSelectors = [
+          '[role="feed"] > div > div > a[href*="maps/place"]',
+          '[role="feed"] a[href*="maps/place"]',
+          '[role="list"] a[href*="maps/place"]',
+          'a[href*="maps/place"]'
+        ];
+        for (const sel of listingSelectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) return els.length;
+        }
+        return 0;
+      });
+
       onProgress?.(`Loading results... (${currentCount} found)`);
-      if (currentCount >= limit * 1.2) break; // Load 20% extra to account for filtering
+      if (currentCount >= limit * 1.2) break;
       if (currentCount === lastCount) {
         noNewResultsCount++;
-        if (noNewResultsCount >= 3) break; // No new results after 3 attempts, probably at the end
+        if (noNewResultsCount >= 3) break;
       } else {
         noNewResultsCount = 0;
       }
       lastCount = currentCount;
     }
-    const listings = await page.$$('[role="feed"] > div > div > a');
+
+    // IMPROVED: Try multiple selectors for listings
+    let listings = await page.$$('[role="feed"] > div > div > a[href*="maps/place"]');
+    if (listings.length === 0) listings = await page.$$('[role="feed"] a[href*="maps/place"]');
+    if (listings.length === 0) listings = await page.$$('a[href*="maps/place"]');
+    console.log(`[GoogleMaps] Found ${listings.length} listings`);
     onProgress?.(`Processing ${Math.min(listings.length, limit)} listings...`);
     for (const listing of listings) {
       if (results.length >= limit) break;
@@ -727,14 +773,40 @@ async function scrapeYelp(browser: Browser, query: string, location: string, lim
       await stealthNavigate(page, searchUrl, { timeout: 20000 });
       await humanWait(page, 2500, 30);
 
-      // Get business links from search results
-      const businessLinks = await page.$$eval('a[href*="/biz/"]', links =>
-        [...new Set(links.map(l => l.getAttribute('href')).filter((h): h is string => Boolean(h && h.startsWith('/biz/') && !h.includes('?'))))]
-      );
+      // IMPROVED: Get business links with multiple selector strategies
+      const businessLinks = await page.evaluate(() => {
+        const results: string[] = [];
+
+        // Strategy 1: Traditional /biz/ links
+        document.querySelectorAll('a[href*="/biz/"]').forEach(link => {
+          const href = link.getAttribute('href');
+          if (href && href.startsWith('/biz/') && !href.includes('?')) {
+            results.push(href);
+          }
+        });
+
+        // Strategy 2: Look for business cards/listing elements
+        document.querySelectorAll('[data-testid*="serp-ia"], [class*="businessName"], [class*="css-"] a[href^="/biz/"]').forEach(el => {
+          const link = el.closest('a') || el.querySelector('a');
+          if (link) {
+            const href = link.getAttribute('href');
+            if (href && href.includes('/biz/') && !href.includes('?')) {
+              results.push(href.startsWith('/') ? href : '/' + href.split('/biz/')[1]);
+            }
+          }
+        });
+
+        return [...new Set(results)];
+      });
+
+      console.log(`[Yelp] Page ${currentPage + 1}: Found ${businessLinks.length} business links`);
 
       // Filter out already seen links
       const newLinks = businessLinks.filter(link => !seenLinks.has(link));
-      if (newLinks.length === 0) break; // No new results, stop pagination
+      if (newLinks.length === 0) {
+        console.log('[Yelp] No new links found on page, stopping pagination');
+        break;
+      }
 
       for (const link of newLinks) {
         seenLinks.add(link);
@@ -744,33 +816,67 @@ async function scrapeYelp(browser: Browser, query: string, location: string, lim
           await stealthNavigate(page, `https://www.yelp.com${link}`, { timeout: 15000 });
           await humanWait(page, 1500, 30);
 
-          const name = await page.$eval('h1', el => el.textContent?.trim() || '').catch(() => '');
+          // IMPROVED: Try multiple selectors for name
+          let name = '';
+          const nameSelectors = ['h1', '[data-testid="biz-name"]', '[class*="businessName"]', '[class*="heading"]'];
+          for (const sel of nameSelectors) {
+            try {
+              name = await page.$eval(sel, el => el.textContent?.trim() || '');
+              if (name && name.length > 2) break;
+            } catch {}
+          }
           if (!name || seenNames.has(name.toLowerCase())) continue;
           seenNames.add(name.toLowerCase());
 
-          const phone = await page.$eval('p[class*="phone"]', el => el.textContent?.trim() || '').catch(() =>
-            page.$eval('a[href^="tel:"]', el => el.textContent?.trim() || '').catch(() => null)
-          );
+          // IMPROVED: Try multiple phone selectors
+          let phone: string | null = null;
+          const phoneSelectors = ['p[class*="phone"]', 'a[href^="tel:"]', '[data-testid*="phone"]', '[class*="contact"] [class*="phone"]'];
+          for (const sel of phoneSelectors) {
+            try {
+              phone = await page.$eval(sel, el => el.textContent?.trim() || '');
+              if (phone && phone.length > 5) break;
+            } catch {}
+          }
 
-          const address = await page.$eval('address', el => el.textContent?.trim().replace(/\s+/g, ' ') || '').catch(() => null);
+          // IMPROVED: Try multiple address selectors
+          let address: string | null = null;
+          const addressSelectors = ['address', '[data-testid*="address"]', '[class*="streetAddress"]', '[class*="location"]'];
+          for (const sel of addressSelectors) {
+            try {
+              address = await page.$eval(sel, el => el.textContent?.trim().replace(/\s+/g, ' ') || '');
+              if (address && address.length > 5) break;
+            } catch {}
+          }
 
-          const website = await page.$eval('a[href*="biz_redir"]', el => {
-            const href = el.getAttribute('href') || '';
-            const match = href.match(/url=([^&]+)/);
-            return match ? decodeURIComponent(match[1]) : null;
-          }).catch(() => null);
+          // IMPROVED: Try multiple website selectors
+          let website: string | null = null;
+          const websiteSelectors = ['a[href*="biz_redir"]', 'a[href*="redirect_url"]', '[data-testid*="website"] a', 'a[rel="noopener"][target="_blank"]'];
+          for (const sel of websiteSelectors) {
+            try {
+              website = await page.$eval(sel, el => {
+                const href = el.getAttribute('href') || '';
+                const match = href.match(/url=([^&]+)/);
+                if (match) return decodeURIComponent(match[1]);
+                if (href.startsWith('http') && !href.includes('yelp.com')) return href;
+                return null;
+              });
+              if (website) break;
+            } catch {}
+          }
 
-          const ratingText = await page.$eval('[aria-label*="star rating"]', el => el.getAttribute('aria-label') || '').catch(() => '');
+          const ratingText = await page.$eval('[aria-label*="star rating"], [class*="rating"]', el => el.getAttribute('aria-label') || el.textContent || '').catch(() => '');
           const ratingMatch = ratingText.match(/([\d.]+)/);
           const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
 
-          const reviewText = await page.$eval('a[href*="reviews"]', el => el.textContent || '').catch(() => '');
+          const reviewText = await page.$eval('a[href*="reviews"], [class*="reviewCount"]', el => el.textContent || '').catch(() => '');
           const reviewMatch = reviewText.match(/(\d+)/);
           const reviewCount = reviewMatch ? parseInt(reviewMatch[1]) : null;
 
           results.push({ name, website, phone, address, instagram: null, rating, review_count: reviewCount, source: 'yelp' });
           onProgress?.(`Yelp: ${name} (${results.length}/${limit})`);
-        } catch {}
+        } catch (err) {
+          console.log(`[Yelp] Error processing business: ${err}`);
+        }
       }
 
       currentPage++;
@@ -1498,6 +1604,7 @@ async function scrapeHomeAdvisor(browser: Browser, query: string, location: stri
 }
 
 // Bing Places - Microsoft's local business search
+// IMPROVED: Updated selectors and added logging
 async function scrapeBingPlaces(browser: Browser, query: string, location: string, limit: number, onProgress?: (message: string) => void): Promise<ScrapedBusiness[]> {
   const results: ScrapedBusiness[] = [];
   const seenNames = new Set<string>();
@@ -1512,27 +1619,73 @@ async function scrapeBingPlaces(browser: Browser, query: string, location: strin
     await stealthNavigate(page, searchUrl, { timeout: 20000 });
     await humanWait(page, 3000, 30);
 
-    // Click on "List view" if available
-    try {
-      await page.click('[aria-label="List view"], [title*="list"]');
-      await humanWait(page, 1500, 25);
-    } catch {}
+    // Click on "List view" if available - try multiple selectors
+    const listViewSelectors = ['[aria-label="List view"]', '[title*="list"]', 'button[aria-label*="List"]', '[class*="listView"]'];
+    for (const selector of listViewSelectors) {
+      try {
+        await page.click(selector);
+        console.log(`[BingPlaces] Clicked list view with selector: ${selector}`);
+        await humanWait(page, 1500, 25);
+        break;
+      } catch {
+        // Try next selector
+      }
+    }
 
-    // Scroll the results list
+    // IMPROVED: Try multiple scroll container selectors
     for (let i = 0; i < 8; i++) {
       await page.evaluate(() => {
-        const list = document.querySelector('.taskList, [class*="listing"]');
-        if (list) list.scrollTop = list.scrollHeight;
+        const selectors = ['.taskList', '[class*="listing"]', '[class*="results"]', '[role="listbox"]', '[class*="entityList"]'];
+        for (const sel of selectors) {
+          const list = document.querySelector(sel);
+          if (list) {
+            list.scrollTop = list.scrollHeight;
+            break;
+          }
+        }
+        // Fallback: scroll the main window
+        window.scrollBy(0, 500);
       });
       await humanWait(page, 1500, 25);
     }
 
-    const listings = await page.$$('.taskItem, .listing, [class*="business"]');
+    // IMPROVED: Try multiple listing selectors
+    const listingSelectors = [
+      '.taskItem',
+      '.listing',
+      '[class*="business"]',
+      '[class*="listItem"]',
+      '[class*="entity"]',
+      '[class*="LocalResult"]',
+      '[data-priority]',
+      'li[role="option"]'
+    ];
+
+    let listings: any[] = [];
+    for (const selector of listingSelectors) {
+      listings = await page.$$(selector);
+      if (listings.length > 0) {
+        console.log(`[BingPlaces] Found ${listings.length} listings with selector: ${selector}`);
+        break;
+      }
+    }
+
+    if (listings.length === 0) {
+      console.log('[BingPlaces] No listings found with any selector');
+    }
 
     for (const listing of listings) {
       if (results.length >= limit) break;
       try {
-        const name = await listing.$eval('h2, .title, [class*="name"]', (el: Element) => el.textContent?.trim() || '').catch(() => '');
+        // IMPROVED: Try multiple name selectors
+        let name = '';
+        const nameSelectors = ['h2', '.title', '[class*="name"]', '[class*="title"]', 'a[class*=""]'];
+        for (const sel of nameSelectors) {
+          try {
+            name = await listing.$eval(sel, (el: Element) => el.textContent?.trim() || '');
+            if (name && name.length > 2) break;
+          } catch {}
+        }
         if (!name || seenNames.has(name.toLowerCase())) continue;
         seenNames.add(name.toLowerCase());
 
@@ -1550,9 +1703,12 @@ async function scrapeBingPlaces(browser: Browser, query: string, location: strin
 
         results.push({ name, website, phone, address, instagram: null, rating, review_count: reviewCount, source: 'bing_places' });
         onProgress?.(`Bing Places: ${name} (${results.length}/${limit})`);
-      } catch {}
+      } catch (err) {
+        console.log(`[BingPlaces] Error processing listing: ${err}`);
+      }
     }
   } finally { await context.close(); }
+  console.log(`[BingPlaces] Total results: ${results.length}`);
   return results;
 }
 

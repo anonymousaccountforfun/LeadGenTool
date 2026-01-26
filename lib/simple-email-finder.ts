@@ -20,6 +20,9 @@ const CONTACT_PATHS = [
   '/company',
   '/info',
   '/support',
+  '/get-in-touch',
+  '/reach-us',
+  '/connect',
 ];
 
 // Email regex pattern - stricter to avoid false positives
@@ -29,7 +32,7 @@ const EMAIL_REGEX = /\b[a-zA-Z][a-zA-Z0-9._%+-]{0,63}@[a-zA-Z0-9][-a-zA-Z0-9]{0,
 // File extensions to reject (false positives from image/asset URLs)
 const REJECT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico', '.css', '.js', '.pdf'];
 
-// Domains to skip (generic, Google, etc.)
+// Domains to skip (generic, tracking, etc.)
 const SKIP_DOMAINS = [
   'example.com',
   'email.com',
@@ -54,10 +57,17 @@ const SKIP_DOMAINS = [
   'schema.org',
   'w3.org',
   'gravatar.com',
+  'mailchimp.com',
+  'sendgrid.net',
+  'hubspot.com',
+  'constantcontact.com',
 ];
 
-// Generic email prefixes to deprioritize
-const GENERIC_PREFIXES = ['info', 'contact', 'hello', 'support', 'sales', 'admin', 'help', 'noreply', 'no-reply'];
+// Prefixes that indicate business contact emails (PRIORITIZE these)
+const BUSINESS_PREFIXES = ['info', 'contact', 'hello', 'office', 'mail', 'enquiries', 'inquiries'];
+
+// Prefixes that are less desirable
+const LOW_PRIORITY_PREFIXES = ['noreply', 'no-reply', 'donotreply', 'mailer', 'newsletter', 'marketing'];
 
 /**
  * Extract domain from URL
@@ -65,14 +75,14 @@ const GENERIC_PREFIXES = ['info', 'contact', 'hello', 'support', 'sales', 'admin
 function getDomain(url: string): string {
   try {
     const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
-    return parsed.hostname.replace(/^www\./, '');
+    return parsed.hostname.replace(/^www\./, '').toLowerCase();
   } catch {
-    return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].toLowerCase();
   }
 }
 
 /**
- * Check if email domain matches website domain
+ * Check if email domain matches or is related to website domain
  */
 function emailMatchesDomain(email: string, websiteDomain: string): boolean {
   const emailDomain = email.split('@')[1]?.toLowerCase();
@@ -85,42 +95,58 @@ function emailMatchesDomain(email: string, websiteDomain: string): boolean {
   if (emailDomain.endsWith('.' + websiteDomain)) return true;
   if (websiteDomain.endsWith('.' + emailDomain)) return true;
 
+  // Check if base domain names match (ignoring TLD)
+  // e.g., company.com and company.net should match
+  const emailBase = emailDomain.split('.').slice(0, -1).join('.');
+  const websiteBase = websiteDomain.split('.').slice(0, -1).join('.');
+  if (emailBase && websiteBase && emailBase === websiteBase) return true;
+
   return false;
 }
 
 /**
  * Score an email based on quality signals
+ * IMPROVED: Domain matching is a bonus, not a requirement
  */
 function scoreEmail(email: string, websiteDomain: string, foundOnContactPage: boolean): number {
-  let score = 0.5; // Base score
+  let score = 0.60; // Higher base score
 
   const emailLower = email.toLowerCase();
   const prefix = emailLower.split('@')[0];
   const emailDomain = emailLower.split('@')[1];
 
-  // Domain matching is very important
+  // Domain matching is a BONUS (not a penalty for non-match)
   if (emailMatchesDomain(email, websiteDomain)) {
-    score += 0.3;
-  } else {
-    score -= 0.2; // Penalize non-matching domains
+    score += 0.20; // Significant bonus for matching domain
   }
 
   // Contact page bonus
   if (foundOnContactPage) {
-    score += 0.1;
+    score += 0.15; // Bigger bonus for contact page
   }
 
-  // Generic email penalty (but still valid)
-  if (GENERIC_PREFIXES.some(p => prefix === p)) {
-    score -= 0.05;
+  // Business prefixes get bonus (these are what we want!)
+  if (BUSINESS_PREFIXES.some(p => prefix === p || prefix.startsWith(p))) {
+    score += 0.10;
   }
 
-  // Personal-looking emails get bonus
-  if (prefix.includes('.') || /^[a-z]+[a-z]$/.test(prefix)) {
+  // Low priority prefixes get penalty
+  if (LOW_PRIORITY_PREFIXES.some(p => prefix === p || prefix.startsWith(p))) {
+    score -= 0.15;
+  }
+
+  // Personal-looking emails (first.last@) get small bonus
+  if (prefix.includes('.') && /^[a-z]+\.[a-z]+$/.test(prefix)) {
     score += 0.05;
   }
 
-  return Math.min(0.85, Math.max(0.3, score));
+  // Gmail/Yahoo/Hotmail get penalty (but still valid - many small businesses use them)
+  const genericProviders = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
+  if (genericProviders.includes(emailDomain)) {
+    score -= 0.10;
+  }
+
+  return Math.min(0.95, Math.max(0.40, score));
 }
 
 /**
@@ -228,6 +254,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number = 10000): Promise
 
 /**
  * Find email for a website using simple HTTP requests
+ * IMPROVED: More lenient thresholds, collects all emails before deciding
  */
 export async function findEmailSimple(website: string): Promise<SimpleEmailResult | null> {
   if (!website) return null;
@@ -243,8 +270,9 @@ export async function findEmailSimple(website: string): Promise<SimpleEmailResul
     allEmails.push(...homeEmails);
   }
 
-  // If we found a high-confidence email on homepage, return it
-  const highConfidenceHome = allEmails.find(e => e.confidence >= 0.75 && emailMatchesDomain(e.email, domain));
+  // IMPROVED: Check for high-confidence email (lowered threshold from 0.75 to 0.70)
+  // AND don't require domain match for early exit
+  const highConfidenceHome = allEmails.find(e => e.confidence >= 0.70);
   if (highConfidenceHome) {
     return highConfidenceHome;
   }
@@ -258,8 +286,8 @@ export async function findEmailSimple(website: string): Promise<SimpleEmailResul
         const contactEmails = extractEmails(html, domain, true);
         allEmails.push(...contactEmails);
 
-        // If we found a good email on contact page, return it
-        const good = contactEmails.find(e => e.confidence >= 0.7 && emailMatchesDomain(e.email, domain));
+        // IMPROVED: Lower threshold (0.65) and don't require domain match
+        const good = contactEmails.find(e => e.confidence >= 0.65);
         if (good) {
           return good;
         }
@@ -269,15 +297,20 @@ export async function findEmailSimple(website: string): Promise<SimpleEmailResul
     }
   }
 
-  // Return best email that matches domain
-  const domainMatching = allEmails.filter(e => emailMatchesDomain(e.email, domain));
-  if (domainMatching.length > 0) {
-    return domainMatching[0];
-  }
-
-  // Return best email overall (might not match domain)
+  // IMPROVED: Return best email regardless of domain match
+  // Sort all emails by confidence and return best
   if (allEmails.length > 0) {
-    return allEmails[0];
+    // Deduplicate
+    const uniqueEmails = new Map<string, SimpleEmailResult>();
+    for (const e of allEmails) {
+      if (!uniqueEmails.has(e.email) || uniqueEmails.get(e.email)!.confidence < e.confidence) {
+        uniqueEmails.set(e.email, e);
+      }
+    }
+
+    // Sort by confidence and return best
+    const sorted = [...uniqueEmails.values()].sort((a, b) => b.confidence - a.confidence);
+    return sorted[0];
   }
 
   return null;
