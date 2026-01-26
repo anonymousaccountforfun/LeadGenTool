@@ -481,6 +481,7 @@ interface FoursquarePlace {
   };
   tel?: string;
   website?: string;
+  email?: string;
   rating?: number;
   stats?: {
     total_ratings?: number;
@@ -729,15 +730,19 @@ export async function searchFoursquare(
   onProgress?.(`Searching Foursquare API for "${query}" in ${location}...`);
 
   try {
-    const searchUrl = new URL('https://api.foursquare.com/v3/places/search');
+    // Foursquare migrated to new endpoint in 2025
+    const searchUrl = new URL('https://places-api.foursquare.com/places/search');
     searchUrl.searchParams.set('query', query);
     searchUrl.searchParams.set('near', location || 'United States');
     searchUrl.searchParams.set('limit', Math.min(limit, 50).toString());
+    // Request all useful fields (fsq_id and stats not supported in new API)
+    searchUrl.searchParams.set('fields', 'name,location,tel,website,email,categories,rating');
 
     const response = await fetch(searchUrl.toString(), {
       headers: {
-        'Authorization': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
         'Accept': 'application/json',
+        'X-Places-Api-Version': '2025-06-17',
       },
     });
     recordKeyUsage('foursquare', apiKey, 1);
@@ -761,9 +766,10 @@ export async function searchFoursquare(
         website: place.website || null,
         phone: place.tel || null,
         address,
+        email: place.email || null, // Foursquare can return email directly
         instagram: null,
         rating: place.rating ? place.rating / 2 : null, // Foursquare uses 0-10 scale
-        review_count: place.stats?.total_ratings || null,
+        review_count: null, // stats field no longer available in new API
         source: 'foursquare_api',
       });
 

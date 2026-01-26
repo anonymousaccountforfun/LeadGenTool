@@ -195,7 +195,7 @@ export async function discoverBusinesses(
       website: r.website,
       phone: r.phone,
       address: r.address,
-      email: r.email,
+      email: r.email ?? null,
     }));
   } catch (err) {
     console.error(`Discovery failed for "${query}" in ${location}: ${err}`);

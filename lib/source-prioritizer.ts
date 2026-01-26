@@ -82,7 +82,9 @@ const CATEGORY_PATTERNS: Record<QueryCategory, string[]> = {
   retail: [
     'store', 'shop', 'boutique', 'outlet', 'mall', 'retail', 'clothing',
     'jewelry', 'furniture', 'electronics', 'hardware', 'grocery', 'supermarket',
-    'pet store', 'toy store', 'bookstore', 'florist', 'gift shop', 'antique'
+    'pet store', 'toy store', 'bookstore', 'florist', 'gift shop', 'antique',
+    'fashion', 'apparel', 'consignment', 'resale', 'thrift', 'vintage', 'designer',
+    'shoes', 'accessories', 'handbag', 'dress', 'bridal', 'formal wear', 'menswear'
   ],
   professional_services: [
     'lawyer', 'attorney', 'accountant', 'cpa', 'financial advisor', 'insurance',
@@ -167,7 +169,8 @@ const SOURCE_PRIORITIES: Record<QueryCategory, SourceConfig[]> = {
     { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
     { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
     { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
+    { source: 'yellow_pages', priority: 1, parallel: true, type: 'scrape' }, // Priority 1: provides websites
+    { source: 'bbb', priority: 1, parallel: true, type: 'scrape' }, // Priority 1: provides websites
     { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
     { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25, type: 'scrape' },
   ],
@@ -209,8 +212,8 @@ const SOURCE_PRIORITIES: Record<QueryCategory, SourceConfig[]> = {
     { source: 'google_serp', priority: 1, parallel: true, type: 'scrape' },
     { source: 'bing_places', priority: 1, parallel: true, type: 'scrape' },
     { source: 'yelp', priority: 1, parallel: true, type: 'scrape' },
+    { source: 'yellow_pages', priority: 1, parallel: true, type: 'scrape' }, // Priority 1: provides websites
     { source: 'thumbtack', priority: 2, parallel: true, minResults: 10, type: 'scrape' },
-    { source: 'yellow_pages', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
     { source: 'manta', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
     { source: 'bbb', priority: 2, parallel: true, minResults: 15, type: 'scrape' },
     { source: 'chamber_of_commerce', priority: 3, parallel: false, minResults: 25, type: 'scrape' },

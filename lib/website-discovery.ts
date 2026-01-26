@@ -248,3 +248,143 @@ export async function findMissingWebsitesBatch(
 export function clearWebsiteCache(): void {
   websiteCache.clear();
 }
+
+/**
+ * Website classification result
+ */
+export interface WebsiteClassification {
+  normalizedUrl: string;
+  type: 'first-party' | 'social-media' | 'directory' | 'invalid';
+  isUsableForEmail: boolean;
+}
+
+// Known social media domains that can't be used for email pattern generation
+const SOCIAL_MEDIA_DOMAINS = [
+  'facebook.com',
+  'fb.com',
+  'instagram.com',
+  'twitter.com',
+  'x.com',
+  'linkedin.com',
+  'tiktok.com',
+  'youtube.com',
+  'pinterest.com',
+  'snapchat.com',
+  'threads.net',
+];
+
+// Known directory/listing sites that can't be used for email pattern generation
+const DIRECTORY_DOMAINS = [
+  'yelp.com',
+  'yellowpages.com',
+  'bbb.org',
+  'foursquare.com',
+  'tripadvisor.com',
+  'google.com',
+  'localsearch.com',
+  'angi.com',
+  'angieslist.com',
+  'homeadvisor.com',
+  'thumbtack.com',
+  'nextdoor.com',
+  'manta.com',
+  'merchantcircle.com',
+  'superpages.com',
+  'citysearch.com',
+  'local.com',
+  'chamberofcommerce.com',
+  'mapquest.com',
+  'bing.com',
+];
+
+/**
+ * Normalize a URL for consistent handling
+ */
+function normalizeUrl(url: string): string {
+  let normalized = url.trim();
+
+  // Add protocol if missing
+  if (!normalized.match(/^https?:\/\//i)) {
+    normalized = `https://${normalized}`;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    // Normalize to lowercase hostname, remove trailing slash
+    return `${parsed.protocol}//${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/$/, '')}${parsed.search}`;
+  } catch {
+    return normalized;
+  }
+}
+
+/**
+ * Extract base domain from URL (removes www. prefix)
+ */
+function extractDomain(url: string): string {
+  try {
+    const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return parsed.hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return url.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].toLowerCase();
+  }
+}
+
+/**
+ * Classify a website URL to determine if it's usable for email discovery
+ *
+ * Social media URLs (facebook.com, instagram.com, etc.) and directory listings
+ * (yelp.com, yellowpages.com, etc.) are not usable for pattern-based email finding.
+ */
+export function normalizeAndClassifyWebsite(url: string | null | undefined): WebsiteClassification | null {
+  if (!url || url.trim() === '') {
+    return null;
+  }
+
+  const normalized = normalizeUrl(url);
+  const domain = extractDomain(normalized);
+
+  // Check for invalid URLs
+  if (!domain || !domain.includes('.')) {
+    return {
+      normalizedUrl: normalized,
+      type: 'invalid',
+      isUsableForEmail: false,
+    };
+  }
+
+  // Check if it's a social media domain
+  if (SOCIAL_MEDIA_DOMAINS.some(d => domain === d || domain.endsWith(`.${d}`))) {
+    return {
+      normalizedUrl: normalized,
+      type: 'social-media',
+      isUsableForEmail: false,
+    };
+  }
+
+  // Check if it's a directory domain
+  if (DIRECTORY_DOMAINS.some(d => domain === d || domain.endsWith(`.${d}`))) {
+    return {
+      normalizedUrl: normalized,
+      type: 'directory',
+      isUsableForEmail: false,
+    };
+  }
+
+  // It's a first-party website
+  return {
+    normalizedUrl: normalized,
+    type: 'first-party',
+    isUsableForEmail: true,
+  };
+}
+
+/**
+ * Get usable website URL for email discovery
+ *
+ * Returns the normalized URL if it's a first-party website that can be used
+ * for email pattern generation. Returns null for social media and directory URLs.
+ */
+export function getUsableWebsite(rawWebsite: string | null | undefined): string | null {
+  const classification = normalizeAndClassifyWebsite(rawWebsite);
+  return classification?.isUsableForEmail ? classification.normalizedUrl : null;
+}

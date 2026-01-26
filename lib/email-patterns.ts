@@ -16,6 +16,17 @@ import { getDomainPattern, learnEmailPattern } from './feedback-aggregator';
 const catchAllCache = new Map<string, { isCatchAll: boolean; timestamp: number }>();
 const CATCH_ALL_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// Domains to skip when generating pattern-based emails
+// These are social media, directories, and other non-business domains
+const SKIP_PATTERN_DOMAINS = [
+  'facebook.com', 'fb.com', 'instagram.com', 'twitter.com', 'linkedin.com', 'tiktok.com',
+  'yelp.com', 'yellowpages.com', 'bbb.org', 'localsearch.com', 'give.org',
+  'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
+  'example.com', 'test.com', 'domain.com',
+  'google.com', 'bing.com',
+  'cpuc.ca.gov', // Government domains
+];
+
 // Cache for learned email patterns (in-memory fallback)
 const patternCache = new Map<string, { pattern: string; examples: string[]; timestamp: number; confidence: number }>();
 const PATTERN_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -1085,6 +1096,11 @@ export async function findEmailByGenericPattern(
   const domain = extractDomainFromUrl(websiteOrDomain);
 
   if (!domain || domain.length < 4 || !domain.includes('.')) {
+    return null;
+  }
+
+  // Skip social media, directories, and other non-business domains
+  if (SKIP_PATTERN_DOMAINS.some(d => domain.includes(d))) {
     return null;
   }
 

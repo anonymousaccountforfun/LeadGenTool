@@ -47,6 +47,16 @@ import {
   classifyBusinessType,
   type CompanySizeEstimate,
 } from './company-size';
+import {
+  isYelpApiAvailable,
+  searchYelpApi,
+} from './yelp-api';
+import {
+  captureDebugScreenshot,
+  captureDebugHtml,
+  logSelectorAttempt,
+  inspectPageState,
+} from './scraper-debug';
 
 export interface ScrapedBusiness {
   name: string;
@@ -235,131 +245,148 @@ async function scrapeGoogleMaps(browser: Browser, query: string, location: strin
 
     // IMPROVED: Try multiple selectors for listings
     let listings = await page.$$('[role="feed"] > div > div > a[href*="maps/place"]');
-    if (listings.length === 0) listings = await page.$$('[role="feed"] a[href*="maps/place"]');
-    if (listings.length === 0) listings = await page.$$('a[href*="maps/place"]');
-    console.log(`[GoogleMaps] Found ${listings.length} listings`);
-    onProgress?.(`Processing ${Math.min(listings.length, limit)} listings...`);
-    for (const listing of listings) {
-      if (results.length >= limit) break;
-      try {
-        await listing.click();
-        await humanWait(page, 2000, 35);
-        // Try multiple selectors for the business name
-        let name = await page.$eval('h1.DUwDvf', el => el.textContent?.trim() || '').catch(() => '');
-        if (!name) name = await page.$eval('h1.fontHeadlineLarge', el => el.textContent?.trim() || '').catch(() => '');
-        if (!name) name = await page.$eval('div[role="main"] h1', el => el.textContent?.trim() || '').catch(() => '');
-        if (!name || name === 'Results' || seenNames.has(name.toLowerCase())) continue;
-        seenNames.add(name.toLowerCase());
-        const phone = await page.$eval('[data-tooltip="Copy phone number"]', el => el.textContent?.trim() || '').catch(() => null);
-        const address = await page.$eval('[data-tooltip="Copy address"]', el => el.textContent?.trim() || '').catch(() => null);
-        // Extract website URL and clean up Google redirect
-        let website = await page.$eval('a[data-tooltip="Open website"]', el => el.getAttribute('href') || '').catch(() => null);
-        if (website && website.includes('/url?q=')) {
-          const match = website.match(/\/url\?q=([^&]+)/);
-          if (match) website = decodeURIComponent(match[1]);
-        }
-        const ratingText = await page.$eval('[role="img"][aria-label*="stars"]', el => el.getAttribute('aria-label') || '').catch(() => '');
-        const ratingMatch = ratingText.match(/([\d.]+)\s*stars/);
-        const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
-        const reviewText = await page.$eval('button[jsaction*="review"]', el => el.textContent || '').catch(() => '');
-        const reviewMatch = reviewText.match(/(\d+)/);
-        const reviewCount = reviewMatch ? parseInt(reviewMatch[1]) : null;
-
-        // Enhanced email extraction from Google Maps / Google My Business
-        let email: string | null = null;
-        try {
-          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-          const skipDomains = ['google.com', 'gstatic.com', 'gmail.com', 'googleusercontent.com', 'schema.org', 'googleapis.com', 'ggpht.com'];
-
-          // Method 1: Check for mailto links in the business panel
-          const mailtoEmail = await page.$eval('a[href^="mailto:"]', el => {
-            const href = el.getAttribute('href') || '';
-            return href.replace('mailto:', '').split('?')[0];
-          }).catch(() => null);
-
-          if (mailtoEmail && mailtoEmail.includes('@')) {
-            const domain = mailtoEmail.split('@')[1]?.toLowerCase();
-            if (domain && !skipDomains.some(d => domain.includes(d))) {
-              email = mailtoEmail.toLowerCase();
-            }
-          }
-
-          // Method 2: Click "About" tab if it exists to reveal more info
-          if (!email) {
-            try {
-              const aboutTab = await page.$('button[aria-label*="About"], [role="tab"]:has-text("About")');
-              if (aboutTab) {
-                await aboutTab.click();
-                await humanWait(page, 1500, 40);
-              }
-            } catch {}
-          }
-
-          // Method 3: Look for email in specific GMB info sections
-          if (!email) {
-            const gmailInfoSelectors = [
-              '[data-tooltip*="email"]',
-              '[aria-label*="email"]',
-              '[data-item-id*="email"]',
-              'button[data-item-id*="authority"]',
-              '.section-info-text',
-              '[class*="business-info"]'
-            ];
-
-            for (const selector of gmailInfoSelectors) {
-              try {
-                const text = await page.$eval(selector, el => el.textContent || '');
-                const matches = text.match(emailRegex);
-                if (matches) {
-                  const valid = matches.find(e => {
-                    const d = e.split('@')[1]?.toLowerCase();
-                    return d && !skipDomains.some(skip => d.includes(skip));
-                  });
-                  if (valid) {
-                    email = valid.toLowerCase();
-                    break;
-                  }
-                }
-              } catch {}
-            }
-          }
-
-          // Method 4: Scan full page content as fallback
-          if (!email) {
-            const pageContent = await page.content();
-            const foundEmails = pageContent.match(emailRegex) || [];
-            const validEmail = foundEmails.find(e => {
-              const domain = e.split('@')[1]?.toLowerCase();
-              return domain && !skipDomains.some(d => domain.includes(d));
-            });
-            if (validEmail) email = validEmail.toLowerCase();
-          }
-
-          // Method 5: Check aria-labels and data attributes for hidden emails
-          if (!email) {
-            const ariaEmails = await page.evaluate(() => {
-              const found: string[] = [];
-              const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-              document.querySelectorAll('[aria-label], [data-value]').forEach(el => {
-                const label = el.getAttribute('aria-label') || el.getAttribute('data-value') || '';
-                const matches = label.match(emailRegex);
-                if (matches) found.push(...matches);
-              });
-              return found;
-            });
-
-            const validAriaEmail = ariaEmails.find(e => {
-              const domain = e.split('@')[1]?.toLowerCase();
-              return domain && !skipDomains.some(d => domain.includes(d));
-            });
-            if (validAriaEmail) email = validAriaEmail.toLowerCase();
-          }
-        } catch {}
-
-        results.push({ name, website, phone, address, instagram: null, rating, review_count: reviewCount, source: 'google_maps', email });
-        onProgress?.(`Found: ${name} (${results.length}/${limit})`);
-      } catch {}
+    logSelectorAttempt('GoogleMaps', 'listings-v1', '[role="feed"] > div > div > a[href*="maps/place"]', listings.length > 0, listings.length);
+    if (listings.length === 0) {
+      listings = await page.$$('[role="feed"] a[href*="maps/place"]');
+      logSelectorAttempt('GoogleMaps', 'listings-v2', '[role="feed"] a[href*="maps/place"]', listings.length > 0, listings.length);
     }
+    if (listings.length === 0) {
+      listings = await page.$$('a[href*="maps/place"]');
+      logSelectorAttempt('GoogleMaps', 'listings-v3', 'a[href*="maps/place"]', listings.length > 0, listings.length);
+    }
+    console.log(`[GoogleMaps] Found ${listings.length} listings`);
+
+    // NEW APPROACH: Extract data directly from list items without clicking
+    // This is more reliable as clicking into details was failing
+    onProgress?.(`Extracting business data from list...`);
+
+    const businesses = await page.evaluate(() => {
+      interface ExtractedBiz {
+        name: string;
+        address: string | null;
+        phone: string | null;
+        rating: number | null;
+        reviews: number | null;
+        placeUrl: string | null;
+      }
+      const results: ExtractedBiz[] = [];
+      const seenNames = new Set<string>();
+
+      // Find the feed container
+      const feedSelectors = ['[role="feed"]', '[role="main"] [role="list"]', '.section-layout'];
+      let feed: Element | null = null;
+      for (const sel of feedSelectors) {
+        feed = document.querySelector(sel);
+        if (feed) break;
+      }
+      if (!feed) return results;
+
+      // Find all list items - look for divs with mouse interaction handlers
+      const items = feed.querySelectorAll('div[jsaction*="mouseover"], div[jsaction*="click"]');
+
+      items.forEach((item) => {
+        // Get the anchor link which contains the business info
+        const link = item.querySelector('a[href*="maps/place"]') as HTMLAnchorElement;
+        if (!link) return;
+
+        // Name from headline element or aria-label
+        const ariaLabel = link.getAttribute('aria-label') || '';
+        const nameEl = item.querySelector('.fontHeadlineSmall, [class*="fontHeadline"]');
+        const name = nameEl?.textContent?.trim() || ariaLabel.split('·')[0]?.trim() || '';
+
+        if (!name || name.length < 2) return;
+        const nameLower = name.toLowerCase();
+        if (seenNames.has(nameLower)) return;
+        seenNames.add(nameLower);
+
+        // Get all text content for pattern matching
+        const allText = item.textContent || '';
+
+        // Phone pattern - US format
+        const phoneMatch = allText.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        const phone = phoneMatch ? phoneMatch[0] : null;
+
+        // Rating pattern - look for "X.X" followed by reviews count in parentheses
+        // e.g., "4.5(123)" or "4.5 (123 reviews)" or just "4.5"
+        let rating: number | null = null;
+        let reviews: number | null = null;
+
+        // First try to find rating with star icon context
+        const ratingSpans = item.querySelectorAll('span');
+        for (const span of ratingSpans) {
+          const text = span.textContent?.trim() || '';
+          // Look for rating like "4.5" that's near review counts
+          const match = text.match(/^(\d\.\d)$/);
+          if (match) {
+            rating = parseFloat(match[1]);
+            // Look for review count nearby
+            const parent = span.parentElement;
+            if (parent) {
+              const parentText = parent.textContent || '';
+              const reviewMatch = parentText.match(/\((\d[\d,]*)\)/);
+              if (reviewMatch) {
+                reviews = parseInt(reviewMatch[1].replace(/,/g, ''));
+              }
+            }
+            break;
+          }
+        }
+
+        // Fallback: scan all text for rating pattern
+        if (!rating) {
+          const ratingMatch = allText.match(/(\d\.\d)\s*\((\d[\d,]*)\)/);
+          if (ratingMatch) {
+            rating = parseFloat(ratingMatch[1]);
+            reviews = parseInt(ratingMatch[2].replace(/,/g, ''));
+          }
+        }
+
+        // Address - look for street number followed by street name
+        const addressMatch = allText.match(/\d+\s+[A-Za-z0-9\s]+(?:St|Ave|Rd|Blvd|Dr|Ln|Way|Ct|Pl|Pkwy|Hwy|Street|Avenue|Road|Boulevard|Drive|Lane|Court|Place)/i);
+        const address = addressMatch ? addressMatch[0].trim() : null;
+
+        // Get the Maps place URL for potential detail fetching later
+        const placeUrl = link.getAttribute('href') || null;
+
+        results.push({ name, address, phone, rating, reviews, placeUrl });
+      });
+
+      return results;
+    });
+
+    console.log(`[GoogleMaps] Direct extraction found ${businesses.length} businesses`);
+
+    // Process extracted businesses
+    for (const biz of businesses) {
+      if (results.length >= limit) break;
+      if (seenNames.has(biz.name.toLowerCase())) continue;
+      seenNames.add(biz.name.toLowerCase());
+
+      results.push({
+        name: biz.name,
+        website: null, // Will be found via website discovery later
+        phone: biz.phone,
+        address: biz.address,
+        instagram: null,
+        rating: biz.rating,
+        review_count: biz.reviews,
+        source: 'google_maps',
+        email: null
+      });
+
+      console.log(`[GoogleMaps] ✓ Extracted: ${biz.name} | phone: ${biz.phone ? 'yes' : 'no'} | addr: ${biz.address ? 'yes' : 'no'}`);
+      onProgress?.(`Found: ${biz.name} (${results.length}/${limit})`);
+    }
+
+    // DEBUG: If no businesses extracted, capture debug info
+    if (results.length === 0) {
+      const searchQuery = location ? `${query} in ${location}` : query;
+      await inspectPageState(page, 'GoogleMaps');
+      await captureDebugScreenshot(page, 'GoogleMaps', searchQuery, 'Direct extraction found 0 businesses');
+      await captureDebugHtml(page, 'GoogleMaps', searchQuery);
+    }
+
+    console.log(`[GoogleMaps] Extraction complete: ${results.length} businesses`);
   } finally { await context.close(); }
   return results;
 }
@@ -751,6 +778,24 @@ async function scrapeInstagram(browser: Browser, query: string, limit: number, o
 }
 
 async function scrapeYelp(browser: Browser, query: string, location: string, limit: number, onProgress?: (message: string) => void): Promise<ScrapedBusiness[]> {
+  // Try Yelp Fusion API first (more reliable, no CAPTCHA issues)
+  if (isYelpApiAvailable()) {
+    console.log('[Yelp] Using Yelp Fusion API');
+    try {
+      const apiResults = await searchYelpApi(query, location, limit, onProgress);
+      if (apiResults.length > 0) {
+        console.log(`[Yelp] API returned ${apiResults.length} businesses`);
+        return apiResults;
+      }
+      console.log('[Yelp] API returned 0 results, falling back to scraping');
+    } catch (err) {
+      console.log(`[Yelp] API error: ${err}, falling back to scraping`);
+    }
+  } else {
+    console.log('[Yelp] No API key found, using web scraping (may be blocked by CAPTCHA)');
+  }
+
+  // Fall back to web scraping
   const results: ScrapedBusiness[] = [];
   const seenNames = new Set<string>();
   const seenLinks = new Set<string>();
@@ -800,6 +845,13 @@ async function scrapeYelp(browser: Browser, query: string, location: string, lim
       });
 
       console.log(`[Yelp] Page ${currentPage + 1}: Found ${businessLinks.length} business links`);
+
+      // DEBUG: If no business links found on first page, capture debug info
+      if (businessLinks.length === 0 && currentPage === 0) {
+        await inspectPageState(page, 'Yelp');
+        await captureDebugScreenshot(page, 'Yelp', `${query} in ${location}`, 'No business links found on search results page');
+        await captureDebugHtml(page, 'Yelp', `${query} in ${location}`);
+      }
 
       // Filter out already seen links
       const newLinks = businessLinks.filter(link => !seenLinks.has(link));
@@ -946,27 +998,82 @@ async function scrapeBBB(browser: Browser, query: string, location: string, limi
     await stealthNavigate(page, searchUrl, { timeout: 20000 });
     await humanWait(page, 3000, 30);
 
-    // Get business detail links
-    const businessLinks = await page.$$eval('a[href*="/profile/"]', links =>
-      [...new Set(links.map(l => l.getAttribute('href')).filter((h): h is string => Boolean(h && h.includes('/profile/'))))]
+    // Get business detail links with names from search results
+    const businessLinksWithNames = await page.$$eval('a[href*="/profile/"]', links =>
+      [...new Map(
+        links
+          .filter(l => l.getAttribute('href')?.includes('/profile/'))
+          .map(l => [
+            l.getAttribute('href'),
+            {
+              href: l.getAttribute('href') || '',
+              name: l.textContent?.trim() || l.querySelector('span')?.textContent?.trim() || ''
+            }
+          ])
+      ).values()]
     );
 
     // Process up to limit * 1.5 links to account for filtering
-    const linksToProcess = businessLinks.slice(0, Math.ceil(limit * 1.5));
-    for (const link of linksToProcess) {
+    const linksToProcess = businessLinksWithNames.slice(0, Math.ceil(limit * 1.5));
+    for (const { href: link, name: searchName } of linksToProcess) {
       if (results.length >= limit) break;
       try {
         const fullUrl = link.startsWith('http') ? link : `https://www.bbb.org${link}`;
         await stealthNavigate(page, fullUrl, { timeout: 15000 });
         await humanWait(page, 1500, 30);
 
-        const name = await page.$eval('h1', el => el.textContent?.trim() || '').catch(() => '');
+        // Prioritize search result name (more reliable than detail page selectors)
+        // BBB detail pages have popups/overlays that can interfere with name extraction
+        let name = searchName;
+        // Only try detail page selectors if search name is empty
+        if (!name || name.length < 2) {
+          name = await page.$eval('[data-testid="business-name"], .dtm-business-name', el => el.textContent?.trim() || '').catch(() => '');
+        }
+        // Filter out cookie/popup related text
+        const invalidNames = ['about', 'cookie preferences', 'cookie', 'privacy', 'consent'];
+        if (!name || invalidNames.some(inv => name.toLowerCase().includes(inv)) || name.length < 2) {
+          continue; // Skip this entry if no valid name found
+        }
         if (!name || seenNames.has(name.toLowerCase())) continue;
         seenNames.add(name.toLowerCase());
 
         const phone = await page.$eval('a[href^="tel:"]', el => el.textContent?.trim() || '').catch(() => null);
-        const address = await page.$eval('.MuiGrid-root address, .dtm-address', el => el.textContent?.trim().replace(/\s+/g, ' ') || '').catch(() => null);
-        const website = await page.$eval('a[href*="track-visit-website"], a.dtm-url', el => el.getAttribute('href') || '').catch(() => null);
+        const address = await page.$eval('.MuiGrid-root address, .dtm-address, [class*="address"]', el => el.textContent?.trim().replace(/\s+/g, ' ') || '').catch(() => null);
+
+        // Updated website selector - BBB now uses "Visit Website" link with external href
+        let website = await page.$eval('a[href*="track-visit-website"], a.dtm-url', el => el.getAttribute('href') || '').catch(() => null);
+        if (!website) {
+          // Fallback: find external link with "Visit Website" text or first external business link
+          website = await page.$$eval('a', links => {
+            for (const link of links) {
+              const href = link.getAttribute('href') || '';
+              const text = link.textContent?.toLowerCase() || '';
+              // Check for "Visit Website" link or external non-social links
+              if ((text.includes('visit website') || text.includes('website')) &&
+                  href.startsWith('http') && !href.includes('bbb.org')) {
+                return href;
+              }
+            }
+            // Fallback: first external link that's not social media or BBB-related
+            for (const link of links) {
+              const href = link.getAttribute('href') || '';
+              if (href.startsWith('http') &&
+                  !href.includes('bbb.org') &&
+                  !href.includes('bbbprograms.org') &&
+                  !href.includes('bbbmarketplacetrust.org') &&
+                  !href.includes('facebook.com') &&
+                  !href.includes('twitter.com') &&
+                  !href.includes('instagram.com') &&
+                  !href.includes('google.com') &&
+                  !href.includes('yelp.com') &&
+                  !href.includes('linkedin.com') &&
+                  !href.includes('youtube.com')) {
+                return href;
+              }
+            }
+            return null;
+          }).catch(() => null);
+        }
 
         // BBB often shows rating as letter grade
         const ratingText = await page.$eval('.dtm-rating, [class*="rating"]', el => el.textContent?.trim() || '').catch(() => '');
@@ -1613,100 +1720,150 @@ async function scrapeBingPlaces(browser: Browser, query: string, location: strin
   page.setDefaultTimeout(20000);
 
   try {
+    // Use Bing Search local results instead of Bing Maps (which requires WebGL)
     const searchQuery = location ? `${query} in ${location}` : query;
-    const searchUrl = `https://www.bing.com/maps?q=${encodeURIComponent(searchQuery)}`;
+    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(searchQuery)}`;
     onProgress?.(`Searching Bing Places for "${searchQuery}"...`);
     await stealthNavigate(page, searchUrl, { timeout: 20000 });
     await humanWait(page, 3000, 30);
 
-    // Click on "List view" if available - try multiple selectors
-    const listViewSelectors = ['[aria-label="List view"]', '[title*="list"]', 'button[aria-label*="List"]', '[class*="listView"]'];
-    for (const selector of listViewSelectors) {
-      try {
-        await page.click(selector);
-        console.log(`[BingPlaces] Clicked list view with selector: ${selector}`);
-        await humanWait(page, 1500, 25);
-        break;
-      } catch {
-        // Try next selector
+    // Extract local business results from Bing Search (Local Pack)
+    const businesses = await page.evaluate(() => {
+      interface ExtractedBiz {
+        name: string;
+        address: string | null;
+        phone: string | null;
+        rating: number | null;
+        reviews: number | null;
+        website: string | null;
       }
-    }
+      const results: ExtractedBiz[] = [];
+      const seenNames = new Set<string>();
 
-    // IMPROVED: Try multiple scroll container selectors
-    for (let i = 0; i < 8; i++) {
-      await page.evaluate(() => {
-        const selectors = ['.taskList', '[class*="listing"]', '[class*="results"]', '[role="listbox"]', '[class*="entityList"]'];
-        for (const sel of selectors) {
-          const list = document.querySelector(sel);
-          if (list) {
-            list.scrollTop = list.scrollHeight;
-            break;
-          }
-        }
-        // Fallback: scroll the main window
-        window.scrollBy(0, 500);
-      });
-      await humanWait(page, 1500, 25);
-    }
+      // Bing shows local results in a carousel or list format
+      // Try multiple container selectors
+      const containerSelectors = [
+        '.b_localC', // Local carousel
+        '.local-result', // Local result items
+        '[data-tag="localresults"]', // Local results container
+        '.b_answerBox', // Answer box (can contain local results)
+        '.b_algo' // Regular results that might be local
+      ];
 
-    // IMPROVED: Try multiple listing selectors
-    const listingSelectors = [
-      '.taskItem',
-      '.listing',
-      '[class*="business"]',
-      '[class*="listItem"]',
-      '[class*="entity"]',
-      '[class*="LocalResult"]',
-      '[data-priority]',
-      'li[role="option"]'
-    ];
+      // Method 1: Local carousel items
+      const carouselItems = document.querySelectorAll('.b_localC .lc_content, .b_localC .local-item, [class*="localCard"]');
+      carouselItems.forEach((item) => {
+        const nameEl = item.querySelector('.lc_content_title, h3, [class*="title"]');
+        const name = nameEl?.textContent?.trim() || '';
+        if (!name || name.length < 2) return;
+        const nameLower = name.toLowerCase();
+        if (seenNames.has(nameLower)) return;
+        seenNames.add(nameLower);
 
-    let listings: any[] = [];
-    for (const selector of listingSelectors) {
-      listings = await page.$$(selector);
-      if (listings.length > 0) {
-        console.log(`[BingPlaces] Found ${listings.length} listings with selector: ${selector}`);
-        break;
-      }
-    }
+        const allText = item.textContent || '';
+        const phoneMatch = allText.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        const phone = phoneMatch ? phoneMatch[0] : null;
 
-    if (listings.length === 0) {
-      console.log('[BingPlaces] No listings found with any selector');
-    }
+        const addressEl = item.querySelector('[class*="address"], [class*="loc"]');
+        const address = addressEl?.textContent?.trim() || null;
 
-    for (const listing of listings) {
-      if (results.length >= limit) break;
-      try {
-        // IMPROVED: Try multiple name selectors
-        let name = '';
-        const nameSelectors = ['h2', '.title', '[class*="name"]', '[class*="title"]', 'a[class*=""]'];
-        for (const sel of nameSelectors) {
-          try {
-            name = await listing.$eval(sel, (el: Element) => el.textContent?.trim() || '');
-            if (name && name.length > 2) break;
-          } catch {}
-        }
-        if (!name || seenNames.has(name.toLowerCase())) continue;
-        seenNames.add(name.toLowerCase());
-
-        const phone = await listing.$eval('a[href^="tel:"], [class*="phone"]', (el: Element) => el.textContent?.trim() || '').catch(() => null);
-        const address = await listing.$eval('[class*="address"]', (el: Element) => el.textContent?.trim().replace(/\s+/g, ' ') || '').catch(() => null);
-        const website = await listing.$eval('a[href*="http"]:not([href*="bing.com"])', (el: Element) => el.getAttribute('href') || '').catch(() => null);
-
-        const ratingText = await listing.$eval('[class*="rating"], [aria-label*="star"]', (el: Element) => el.textContent || el.getAttribute('aria-label') || '').catch(() => '');
-        const ratingMatch = ratingText.match(/([\d.]+)/);
+        const ratingMatch = allText.match(/(\d\.\d)\s*(?:\(|star)/);
         const rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
 
-        const reviewText = await listing.$eval('[class*="review"]', (el: Element) => el.textContent || '').catch(() => '');
-        const reviewMatch = reviewText.match(/(\d+)/);
-        const reviewCount = reviewMatch ? parseInt(reviewMatch[1]) : null;
+        const reviewMatch = allText.match(/\((\d[\d,]*)\s*review/i);
+        const reviews = reviewMatch ? parseInt(reviewMatch[1].replace(/,/g, '')) : null;
 
-        results.push({ name, website, phone, address, instagram: null, rating, review_count: reviewCount, source: 'bing_places' });
-        onProgress?.(`Bing Places: ${name} (${results.length}/${limit})`);
-      } catch (err) {
-        console.log(`[BingPlaces] Error processing listing: ${err}`);
-      }
+        const websiteEl = item.querySelector('a[href*="http"]:not([href*="bing.com"])') as HTMLAnchorElement;
+        const website = websiteEl?.href || null;
+
+        results.push({ name, address, phone, rating, reviews, website });
+      });
+
+      // Method 2: Local answer box
+      const localBoxItems = document.querySelectorAll('.b_answerBox .b_factrow, .local-answers li, [class*="localAnswer"] li');
+      localBoxItems.forEach((item) => {
+        const nameEl = item.querySelector('a, [class*="title"], strong');
+        const name = nameEl?.textContent?.trim() || '';
+        if (!name || name.length < 2) return;
+        const nameLower = name.toLowerCase();
+        if (seenNames.has(nameLower)) return;
+        seenNames.add(nameLower);
+
+        const allText = item.textContent || '';
+        const phoneMatch = allText.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        const phone = phoneMatch ? phoneMatch[0] : null;
+
+        const addressMatch = allText.match(/\d+\s+[A-Za-z0-9\s]+(?:St|Ave|Rd|Blvd|Dr|Ln|Way|Ct|Pl|Street|Avenue|Road)/i);
+        const address = addressMatch ? addressMatch[0].trim() : null;
+
+        results.push({ name, address, phone, rating: null, reviews: null, website: null });
+      });
+
+      // Method 3: Regular results with local business indicators
+      const regularResults = document.querySelectorAll('.b_algo');
+      regularResults.forEach((item) => {
+        // Check if this is a local business result (has address or phone)
+        const allText = item.textContent || '';
+        const hasLocalIndicators = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/.test(allText) ||
+          /\d+\s+[A-Za-z\s]+(St|Ave|Rd|Blvd|Dr)/i.test(allText);
+
+        if (!hasLocalIndicators) return;
+
+        const nameEl = item.querySelector('h2 a, h2');
+        const name = nameEl?.textContent?.trim() || '';
+        if (!name || name.length < 2) return;
+        const nameLower = name.toLowerCase();
+        if (seenNames.has(nameLower)) return;
+        seenNames.add(nameLower);
+
+        const phoneMatch = allText.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        const phone = phoneMatch ? phoneMatch[0] : null;
+
+        const addressMatch = allText.match(/\d+\s+[A-Za-z0-9\s]+(?:St|Ave|Rd|Blvd|Dr|Ln|Way|Ct|Pl|Street|Avenue|Road)/i);
+        const address = addressMatch ? addressMatch[0].trim() : null;
+
+        const linkEl = item.querySelector('h2 a, a[href*="http"]') as HTMLAnchorElement;
+        const website = linkEl?.href && !linkEl.href.includes('bing.com') ? linkEl.href : null;
+
+        results.push({ name, address, phone, rating: null, reviews: null, website });
+      });
+
+      return results;
+    });
+
+    console.log(`[BingPlaces] Direct extraction found ${businesses.length} businesses`);
+
+    // Process extracted businesses
+    for (const biz of businesses) {
+      if (results.length >= limit) break;
+      if (seenNames.has(biz.name.toLowerCase())) continue;
+      seenNames.add(biz.name.toLowerCase());
+
+      results.push({
+        name: biz.name,
+        website: biz.website,
+        phone: biz.phone,
+        address: biz.address,
+        instagram: null,
+        rating: biz.rating,
+        review_count: biz.reviews,
+        source: 'bing_places',
+        email: null
+      });
+
+      console.log(`[BingPlaces] ✓ Extracted: ${biz.name} | phone: ${biz.phone ? 'yes' : 'no'} | addr: ${biz.address ? 'yes' : 'no'}`);
+      onProgress?.(`Bing Places: ${biz.name} (${results.length}/${limit})`);
     }
+
+    // DEBUG: If no businesses extracted, capture debug info
+    if (results.length === 0) {
+      console.log('[BingPlaces] No businesses extracted');
+      await inspectPageState(page, 'BingPlaces');
+      await captureDebugScreenshot(page, 'BingPlaces', searchQuery, 'No businesses extracted from Bing Search');
+      await captureDebugHtml(page, 'BingPlaces', searchQuery);
+    }
+
+    console.log(`[BingPlaces] Extraction complete: ${results.length} businesses`);
   } finally { await context.close(); }
   console.log(`[BingPlaces] Total results: ${results.length}`);
   return results;

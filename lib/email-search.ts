@@ -26,6 +26,10 @@ const SKIP_EMAIL_DOMAINS = [
   'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
   'yelp.com', 'yellowpages.com', 'bbb.org',
   'sentry.io', 'wixpress.com', 'wordpress.com', 'squarespace.com',
+  // Government domains
+  '.gov', 'ca.gov', 'cpuc.ca.gov', 'state.',
+  // Directory/aggregator sites
+  'localsearch.com', 'give.org',
 ];
 
 /**

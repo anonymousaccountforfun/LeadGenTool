@@ -61,6 +61,19 @@ const SKIP_DOMAINS = [
   'sendgrid.net',
   'hubspot.com',
   'constantcontact.com',
+  // Government domains - never business contact emails
+  '.gov',
+  'ca.gov',
+  'state.',
+  // Directory/aggregator sites
+  'yellowpages.com',
+  'yelp.com',
+  'bbb.org',
+  'localsearch.com',
+  'give.org',
+  // Other non-business domains
+  'harvesttotable.com', // gardening site incorrectly matched
+  'wickedthemusicalstore.com', // unrelated store
 ];
 
 // Prefixes that indicate business contact emails (PRIORITIZE these)

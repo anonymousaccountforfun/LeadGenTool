@@ -333,7 +333,13 @@ const SKIP_EMAIL_DOMAINS = [
   'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
   'googlemail.com', 'mail.com', 'email.com', 'test.com', 'domain.com',
   'yoursite.com', 'yourdomain.com', 'company.com', 'website.com',
-  'sentry-next.wixpress.com', 'static.wixstatic.com'
+  'sentry-next.wixpress.com', 'static.wixstatic.com',
+  // Social media platforms - never business contact emails
+  'facebook.com', 'fb.com', 'instagram.com', 'twitter.com', 'linkedin.com', 'tiktok.com',
+  // Directory/aggregator sites - emails belong to the directory, not the business
+  'yelp.com', 'yellowpages.com', 'bbb.org', 'localsearch.com', 'give.org',
+  // Government domains
+  'cpuc.ca.gov',
 ];
 
 export interface EmailResult {
@@ -1523,24 +1529,31 @@ export async function findEmail(website: string, browser: Browser): Promise<Emai
       }
     }
 
-    // Last resort: quick MX check on info@
-    const infoEmail = `info@${domain}`;
-    try {
-      const mxCheck = await quickVerify(infoEmail);
-      const confidence = adjustConfidenceForCatchAll(mxCheck.confidence, isCatchAll, true);
-      const source = mxCheck.hasMx ? (isCatchAll ? 'generated-catchall' : 'generated-mx-valid') : 'generated';
-      // Only cache if confidence is reasonable
-      if (confidence >= 0.6) {
-        cacheEmail(domain, infoEmail, confidence, source, isCatchAll).catch(() => {});
+    // Last resort: quick MX check on info@ (but skip social media/directory domains)
+    if (!SKIP_EMAIL_DOMAINS.some(d => domain.includes(d))) {
+      const infoEmail = `info@${domain}`;
+      try {
+        const mxCheck = await quickVerify(infoEmail);
+        const confidence = adjustConfidenceForCatchAll(mxCheck.confidence, isCatchAll, true);
+        const source = mxCheck.hasMx ? (isCatchAll ? 'generated-catchall' : 'generated-mx-valid') : 'generated';
+        // Only cache if confidence is reasonable
+        if (confidence >= 0.6) {
+          cacheEmail(domain, infoEmail, confidence, source, isCatchAll).catch(() => {});
+        }
+        return { email: infoEmail, source, confidence };
+      } catch {
+        const confidence = adjustConfidenceForCatchAll(0.5, isCatchAll, true);
+        return { email: infoEmail, source: 'generated', confidence };
       }
-      return { email: infoEmail, source, confidence };
-    } catch {
-      const confidence = adjustConfidenceForCatchAll(0.5, isCatchAll, true);
-      return { email: infoEmail, source: 'generated', confidence };
     }
+    return { email: null, source: null, confidence: 0 };
 
   } catch (error) {
     const fallbackDomain = extractDomain(website);
+    // Skip generating emails for social media and directory domains
+    if (SKIP_EMAIL_DOMAINS.some(d => fallbackDomain.includes(d))) {
+      return { email: null, source: null, confidence: 0 };
+    }
     try {
       const mxCheck = await quickVerify(`info@${fallbackDomain}`);
       return {
@@ -1564,7 +1577,7 @@ export async function findEmail(website: string, browser: Browser): Promise<Emai
 import { findEmailSimple } from './simple-email-finder';
 import { findEmailByGenericPattern, type GenericPatternResult } from './email-patterns';
 import { findEmailFromSocial, type SocialEmailResult, type SocialSearchParams } from './social-email-finder';
-import { findMissingWebsite } from './website-discovery';
+import { findMissingWebsite, getUsableWebsite } from './website-discovery';
 import { searchForEmailDirectly, type EmailSearchResult } from './email-search';
 
 export interface EnhancedEmailResult {
@@ -1803,14 +1816,15 @@ export async function findEmailComprehensive(
 
   const websiteDomain = website ? getWebsiteDomain(website) : undefined;
 
-  // Branch A: Website-based finding (if website exists)
+  // Branch A: Website-based finding (if usable website exists)
   const branchA = async (): Promise<ScoredEmail[]> => {
-    if (!website) return [];
+    const usableWebsite = getUsableWebsite(website);
+    if (!usableWebsite) return []; // Skip if no usable first-party website
     const results: ScoredEmail[] = [];
 
     try {
       // Layer 1: Website scraping
-      const websiteResult = await findEmailSimple(website);
+      const websiteResult = await findEmailSimple(usableWebsite);
       if (websiteResult) {
         results.push({
           email: websiteResult.email,
@@ -1822,7 +1836,7 @@ export async function findEmailComprehensive(
 
     try {
       // Layer 2: Pattern + SMTP
-      const patternResult = await findEmailByGenericPattern(website);
+      const patternResult = await findEmailByGenericPattern(usableWebsite);
       if (patternResult) {
         results.push({
           email: patternResult.email,
@@ -1837,7 +1851,8 @@ export async function findEmailComprehensive(
 
   // Branch B: Find missing website, then search it
   const branchB = async (): Promise<ScoredEmail[]> => {
-    if (website) return []; // Skip if website already exists
+    const usableWebsite = getUsableWebsite(website);
+    if (usableWebsite) return []; // Skip only if usable first-party website exists
     const results: ScoredEmail[] = [];
 
     try {
