@@ -109,19 +109,19 @@ function HowItWorks() {
       <div className="grid gap-6 md:grid-cols-3">
         <div className="bg-white/5 rounded-xl p-6 border border-white/10">
           <div className="text-3xl mb-3">1</div>
-          <h3 className="text-lg font-medium text-white mb-2">Search the Web</h3>
+          <h3 className="text-lg font-medium text-white mb-2">Find Businesses</h3>
           <p className="text-sm text-gray-400">
-            We search multiple sources based on your query. For local businesses, we scan Google Maps, Yelp,
-            Yellow Pages, and the Better Business Bureau. For online brands, we search Google and Instagram.
+            Enter your target industry and location. We query Google Places, Yelp, Foursquare, and HERE
+            APIs simultaneously to build a comprehensive list of matching businesses with their details.
           </p>
         </div>
 
         <div className="bg-white/5 rounded-xl p-6 border border-white/10">
           <div className="text-3xl mb-3">2</div>
-          <h3 className="text-lg font-medium text-white mb-2">Find Contact Info</h3>
+          <h3 className="text-lg font-medium text-white mb-2">Discover Emails</h3>
           <p className="text-sm text-gray-400">
-            For each business found, we visit their website and scan common pages like Contact, About,
-            and Team to find email addresses. We prioritize business emails (info@, contact@) over generic ones.
+            For each business, we run parallel email discovery: Hunter.io lookups, domain registrant data,
+            website crawling, and pattern matching. Each email gets a confidence score based on verification.
           </p>
         </div>
 
@@ -138,25 +138,25 @@ function HowItWorks() {
       <div className="mt-8 bg-white/5 rounded-xl p-6 border border-white/10">
         <h3 className="text-lg font-medium text-white mb-3">Under the Hood</h3>
         <p className="text-sm text-gray-400 mb-4">
-          This tool uses a cloud browser service to visit websites just like a real person would.
+          This tool combines multiple data APIs and intelligent email discovery to find verified business contacts.
           When you start a search:
         </p>
         <ul className="text-sm text-gray-400 space-y-2">
           <li className="flex items-start gap-2">
             <span className="text-emerald-400 mt-1">•</span>
-            <span><strong className="text-gray-300">Discovery:</strong> A headless browser searches Google Maps, Yelp, Yellow Pages, and BBB, scrolling through listings and extracting business details like name, phone, address, and website URL from each source.</span>
+            <span><strong className="text-gray-300">Business Discovery:</strong> We query Google Places, Yelp Fusion, Foursquare, and HERE APIs in parallel to find businesses matching your search. Each source provides name, address, phone, website, ratings, and hours.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-emerald-400 mt-1">•</span>
-            <span><strong className="text-gray-300">Email Extraction:</strong> For each business with a website, we visit their homepage plus common contact pages, scanning the HTML for email patterns and mailto: links.</span>
+            <span><strong className="text-gray-300">Email Intelligence:</strong> For each business, we run multiple discovery strategies in parallel: Hunter.io for known business emails, WhoisXML for domain registrant data, website crawling for contact pages, and smart pattern generation (info@, contact@, owner names) with verification.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-emerald-400 mt-1">•</span>
-            <span><strong className="text-gray-300">Smart Filtering:</strong> We skip generic email providers (Gmail, Yahoo) and only keep emails that match the business domain. If no email is found, we generate a likely address (info@domain.com) marked as lower confidence.</span>
+            <span><strong className="text-gray-300">Confidence Scoring:</strong> Every email gets a confidence score (0-100%) based on how it was found. Verified emails from APIs score highest, pattern-matched emails score lower. Your export is color-coded so you can prioritize high-confidence leads.</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="text-emerald-400 mt-1">•</span>
-            <span><strong className="text-gray-300">Results Storage:</strong> All data is saved to a database so you can download your leads anytime as a formatted spreadsheet.</span>
+            <span><strong className="text-gray-300">Real-Time Processing:</strong> Jobs run asynchronously with live progress updates. Results stream in as they&apos;re found, and everything is saved to a database for instant export anytime.</span>
           </li>
         </ul>
       </div>
