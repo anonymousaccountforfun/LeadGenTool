@@ -112,7 +112,7 @@ export async function generateExcel(businesses: Business[], query: string): Prom
       phone: business.phone || '',
       address: business.address || '',
       instagram: business.instagram || '',
-      rating: business.rating?.toFixed(1) || '',
+      rating: business.rating != null ? Number(business.rating).toFixed(1) : '',
       reviews: business.review_count || '',
       years_in_business: business.years_in_business || '',
       // New columns

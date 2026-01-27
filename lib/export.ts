@@ -136,7 +136,7 @@ function getColumnValue(business: Business, column: ExportColumn): string {
     case 'instagram':
       return business.instagram || '';
     case 'rating':
-      return business.rating?.toFixed(1) || '';
+      return business.rating != null ? Number(business.rating).toFixed(1) : '';
     case 'review_count':
       return business.review_count?.toString() || '';
     case 'years_in_business':
@@ -450,7 +450,7 @@ export function generateSalesforceCsv(
       business.employee_count?.toString() || '',
       rating,
       `LeadGenTool - ${formatSourceName(business.source)}`,
-      `Reviews: ${business.review_count || 0}, Rating: ${business.rating?.toFixed(1) || 'N/A'}`,
+      `Reviews: ${business.review_count || 0}, Rating: ${business.rating != null ? Number(business.rating).toFixed(1) : 'N/A'}`,
     ];
 
     lines.push(row.map(escapeCsvField).join(','));
@@ -499,7 +499,7 @@ export function generatePipedriveCsv(
       business.phone || '',
       `${business.name} - Outreach`,
       '', // Deal value - not available
-      `Source: ${formatSourceName(business.source)}. Rating: ${business.rating?.toFixed(1) || 'N/A'} (${business.review_count || 0} reviews). Website: ${business.website || 'N/A'}`,
+      `Source: ${formatSourceName(business.source)}. Rating: ${business.rating != null ? Number(business.rating).toFixed(1) : 'N/A'} (${business.review_count || 0} reviews). Website: ${business.website || 'N/A'}`,
       label,
     ];
 
@@ -656,7 +656,7 @@ export async function generateExcel(
       phone: business.phone || '',
       address: business.address || '',
       instagram: business.instagram || '',
-      rating: business.rating?.toFixed(1) || '',
+      rating: business.rating != null ? Number(business.rating).toFixed(1) : '',
       reviews: business.review_count || '',
       years_in_business: business.years_in_business || '',
       employee_count: business.employee_count || '',
