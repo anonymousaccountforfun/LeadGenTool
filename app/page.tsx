@@ -173,6 +173,7 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const pollingRef = useRef<boolean>(false);
 
   // Fetch search history on mount and when returning to form
   const fetchHistory = useCallback(async () => {
@@ -191,9 +192,10 @@ export default function Home() {
     fetchHistory();
   }, [fetchHistory]);
 
-  // Cleanup EventSource on unmount
+  // Cleanup EventSource and polling on unmount
   useEffect(() => {
     return () => {
+      pollingRef.current = false;
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
@@ -202,7 +204,8 @@ export default function Home() {
 
   // Connect to SSE stream for live updates
   const connectToStream = useCallback((jobId: string, query: string, location?: string, targetCount?: number) => {
-    // Close any existing connection
+    // Stop any existing polling and close existing connection
+    pollingRef.current = false;
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
@@ -278,10 +281,19 @@ export default function Home() {
 
   // Fallback polling for environments where SSE doesn't work
   const startPolling = useCallback((jobId: string) => {
+    // Stop any existing polling
+    pollingRef.current = true;
+
     const poll = async () => {
+      // Check if polling was stopped
+      if (!pollingRef.current) return;
+
       try {
         const response = await fetch(`/api/jobs/${jobId}`);
         const data = await response.json();
+
+        // Check again after fetch in case polling was stopped
+        if (!pollingRef.current) return;
 
         setJobData(prev => ({
           ...prev!,
@@ -295,6 +307,7 @@ export default function Home() {
         }
 
         if (data.status === 'completed') {
+          pollingRef.current = false;
           setJobData({
             id: data.id,
             status: data.status,
@@ -307,16 +320,19 @@ export default function Home() {
           });
           setAppState('results');
         } else if (data.status === 'failed') {
+          pollingRef.current = false;
           setError(data.message);
           setAppState('form');
           setIsLoading(false);
-        } else {
-          // Continue polling
+        } else if (pollingRef.current) {
+          // Continue polling only if not stopped
           setTimeout(poll, 1500);
         }
       } catch (e) {
         console.error('Polling error:', e);
-        setTimeout(poll, 2000);
+        if (pollingRef.current) {
+          setTimeout(poll, 2000);
+        }
       }
     };
 
