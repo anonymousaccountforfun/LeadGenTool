@@ -60,8 +60,9 @@ type Phase = 'discovery' | 'finding-emails' | 'verification' | 'complete';
 
 function getPhase(progress: number, message: string): Phase {
   if (progress >= 95) return 'complete';
-  if (message.toLowerCase().includes('verif')) return 'verification';
-  if (message.toLowerCase().includes('email') || message.toLowerCase().includes('batch')) return 'finding-emails';
+  const msg = (message || '').toLowerCase();
+  if (msg.includes('verif')) return 'verification';
+  if (msg.includes('email') || msg.includes('batch')) return 'finding-emails';
   return 'discovery';
 }
 
