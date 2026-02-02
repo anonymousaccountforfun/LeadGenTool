@@ -78,7 +78,7 @@ export const processLeadGenJob = inngest.createFunction(
           const key = business.name.toLowerCase().trim();
           const existing = seen.get(key);
           if (!existing) {
-            seen.set(key, business);
+            seen.set(key, business as ScrapedBusiness);
           } else {
             // Merge data - keep the one with more info
             seen.set(key, {

@@ -1,46 +1,63 @@
 {
-  "name": "lead-gen-tool",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@anonymousaccountforfun/lead-gen-tool",
+  "version": "1.0.0",
+  "description": "Full-featured lead generation tool with business discovery and email finding",
+  "main": "dist/lib/index.js",
+  "types": "dist/lib/index.d.ts",
+  "files": [
+    "dist/lib"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anonymousaccountforfun/LeadGenTool.git"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:lib": "tsc -p tsconfig.lib.json",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "prepublishOnly": "npm run build:lib"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
-    "@sentry/nextjs": "^10.36.0",
-    "@types/bcryptjs": "^2.4.6",
     "@upstash/redis": "^1.36.1",
-    "bcryptjs": "^3.0.3",
-    "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
-    "inngest": "^3.49.3",
-    "next": "16.1.4",
-    "next-auth": "^4.24.13",
-    "pdf-parse": "^2.4.5",
-    "playwright": "^1.58.0",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "vercel": "^50.5.0"
+    "playwright": "^1.58.0"
+  },
+  "peerDependencies": {
+    "playwright": "^1.50.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.0",
+    "@sentry/nextjs": "^10.36.0",
     "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.0.18",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.1.4",
+    "inngest": "^3.49.3",
+    "next": "16.1.4",
+    "next-auth": "^4.24.13",
+    "pdf-parse": "^2.4.5",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "vercel": "^50.5.0",
     "vitest": "^4.0.18"
   }
 }
